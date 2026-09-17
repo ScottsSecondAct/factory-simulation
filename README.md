@@ -4,7 +4,7 @@ Discrete-event factory orchestration simulator modeling a flexible manufacturing
 
 [![Rust](https://img.shields.io/badge/Rust-2021_edition-orange)](https://www.rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![CI](https://github.com/OWNER/factory-simulation/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/factory-simulation/actions/workflows/ci.yml)
+[![CI](https://github.com/ScottsSecondAct/factory-simulation/actions/workflows/ci.yml/badge.svg)](https://github.com/ScottsSecondAct/factory-simulation/actions/workflows/ci.yml)
 
 ## Architecture
 
