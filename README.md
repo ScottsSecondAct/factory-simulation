@@ -3,7 +3,7 @@
 Discrete-event factory orchestration simulator modeling a flexible manufacturing system (FMS) with 25 CNC mills, 6 AGVs on a shared-lane network, tool crib, pallet magazine, and priority job queue -- plus an Electron dashboard for real-time visualization.
 
 [![Rust](https://img.shields.io/badge/Rust-2021_edition-orange)](https://www.rust-lang.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-Source_Available-lightgrey.svg)](LICENSE)
 [![CI](https://github.com/ScottsSecondAct/factory-simulation/actions/workflows/ci.yml/badge.svg)](https://github.com/ScottsSecondAct/factory-simulation/actions/workflows/ci.yml)
 
 ## Architecture
@@ -170,4 +170,4 @@ Each mill connects to the loop via a dedicated spur segment. AGVs compete for se
 
 ## License
 
-MIT
+Copyright (c) 2026 Scott Davis. All rights reserved. This source code is available for viewing and reference only. See [LICENSE](LICENSE) for details.
