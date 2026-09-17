@@ -18,18 +18,35 @@ pub enum Event {
     // Job lifecycle
     JobArrival(Job),
     MillLoadDone(MillId),
-    MillMachiningDone { mill_id: MillId, job_id: JobId, op_index: usize },
+    MillMachiningDone {
+        mill_id: MillId,
+        job_id: JobId,
+        op_index: usize,
+    },
     MillUnloadDone(MillId),
     ToolChangeDone(MillId),
 
     // AGV movement
-    AgvArrived { agv_id: AgvId, segment: SegmentId },
-    AgvLoadDone { agv_id: AgvId },
-    AgvUnloadDone { agv_id: AgvId },
+    AgvArrived {
+        agv_id: AgvId,
+        segment: SegmentId,
+    },
+    AgvLoadDone {
+        agv_id: AgvId,
+    },
+    AgvUnloadDone {
+        agv_id: AgvId,
+    },
 
     // Resources
-    ToolIssued { tool_set: ToolSetId, dest_mill: MillId },
-    PalletIssued { pallet_id: PalletId, dest_mill: MillId },
+    ToolIssued {
+        tool_set: ToolSetId,
+        dest_mill: MillId,
+    },
+    PalletIssued {
+        pallet_id: PalletId,
+        dest_mill: MillId,
+    },
 
     // Faults
     FaultOccur(FaultTarget),
@@ -76,13 +93,19 @@ pub struct SimEngine {
     event_count: u64,
 }
 
-impl SimEngine {
-    pub fn new() -> Self {
+impl Default for SimEngine {
+    fn default() -> Self {
         Self {
             queue: BinaryHeap::with_capacity(4096),
             clock: 0.0,
             event_count: 0,
         }
+    }
+}
+
+impl SimEngine {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Current simulation time.
@@ -111,7 +134,8 @@ impl SimEngine {
             assert!(
                 te.time >= self.clock,
                 "cannot schedule event in the past: {} < {}",
-                te.time, self.clock
+                te.time,
+                self.clock
             );
             self.queue.push(te);
         }

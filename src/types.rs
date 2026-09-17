@@ -59,7 +59,7 @@ pub enum AgvState {
     Traveling,
     Loading,
     Unloading,
-    Blocked,   // waiting for a lane segment
+    Blocked, // waiting for a lane segment
     Faulted,
 }
 
@@ -86,7 +86,7 @@ pub enum Priority {
 pub struct Operation {
     pub tool_set: ToolSetId,
     pub duration: SimTime,
-    pub pallet_type: u8,       // 0..3 → four pallet fixture types
+    pub pallet_type: u8, // 0..3 → four pallet fixture types
 }
 
 // ── Job (a work order with sequenced operations) ────────────────────

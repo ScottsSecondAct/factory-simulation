@@ -342,17 +342,14 @@ impl IpcRunner {
             }
             InCommand::InjectFault { target } => {
                 let now = self.engine.now();
-                self.engine
-                    .schedule(now, Event::FaultOccur(target));
+                self.engine.schedule(now, Event::FaultOccur(target));
             }
-            InCommand::SetParam { param, value } => {
-                match param.as_str() {
-                    "mill_mtbf" => self.fault_inj.config.mill_mtbf = value,
-                    "agv_mtbf" => self.fault_inj.config.agv_mtbf = value,
-                    "snapshot_interval" => self.config.snapshot_interval = value,
-                    _ => eprintln!("[WARN] unknown param: {param}"),
-                }
-            }
+            InCommand::SetParam { param, value } => match param.as_str() {
+                "mill_mtbf" => self.fault_inj.config.mill_mtbf = value,
+                "agv_mtbf" => self.fault_inj.config.agv_mtbf = value,
+                "snapshot_interval" => self.config.snapshot_interval = value,
+                _ => eprintln!("[WARN] unknown param: {param}"),
+            },
             InCommand::Step { count } => {
                 for _ in 0..count {
                     if !self.step_one() {
@@ -591,8 +588,7 @@ impl IpcRunner {
             .iter()
             .map(|m| if dur > 0.0 { m.busy_time / dur } else { 0.0 })
             .collect();
-        let avg_util =
-            utilizations.iter().sum::<f64>() / utilizations.len().max(1) as f64;
+        let avg_util = utilizations.iter().sum::<f64>() / utilizations.len().max(1) as f64;
 
         let msg = OutMessage::Summary(SummaryMsg {
             sim_duration: dur,
@@ -740,14 +736,9 @@ impl IpcRunner {
             }
 
             Event::SchedulerTick => {
+                self.metrics.sample_queue(self.scheduler.job_queue.len());
                 self.metrics
-                    .sample_queue(self.scheduler.job_queue.len());
-                self.metrics.maybe_snapshot(
-                    now,
-                    &self.mills,
-                    &self.agvs,
-                    &self.scheduler,
-                );
+                    .maybe_snapshot(now, &self.mills, &self.agvs, &self.scheduler);
                 let sched_events = self.scheduler.tick(
                     now,
                     &mut self.mills,

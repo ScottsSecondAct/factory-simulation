@@ -141,8 +141,7 @@ impl Metrics {
             })
             .collect();
 
-        let avg_util =
-            utilizations.iter().sum::<f64>() / utilizations.len().max(1) as f64;
+        let avg_util = utilizations.iter().sum::<f64>() / utilizations.len().max(1) as f64;
         let avg_queue = if self.queue_samples > 0 {
             self.queue_depth_sum / self.queue_samples as f64
         } else {

@@ -20,7 +20,7 @@ pub struct Agv {
     pub path: Vec<SegmentId>,
     pub path_cursor: usize,
     // Metrics
-    pub distance_traveled: u64,   // segments
+    pub distance_traveled: u64, // segments
     pub loads_delivered: u64,
 }
 
@@ -82,22 +82,16 @@ pub struct LaneNetwork {
     occupant: Vec<Option<AgvId>>,
 }
 
-impl LaneNetwork {
-    /// Build the factory's standard lane layout.
-    ///
-    /// Main loop: 0 → 1 → 2 → … → 19 → 0 (bidirectional for flexibility).
-    /// Spurs: loop segment ↔ mill spur (bidirectional).
-    pub fn new() -> Self {
+impl Default for LaneNetwork {
+    fn default() -> Self {
         let mut adj = vec![Vec::new(); TOTAL_SEGMENTS];
 
-        // Main loop (both directions so AGVs can take shorter arcs).
         for i in 0..LOOP_SEGMENTS {
             let next = (i + 1) % LOOP_SEGMENTS;
             adj[i].push(next);
             adj[next].push(i);
         }
 
-        // Mill spurs: connect each spur to its loop attachment point.
         for mid in 0..NUM_MILLS {
             let loop_seg = mill_loop_segment(mid);
             let spur = mill_spur(mid);
@@ -110,6 +104,12 @@ impl LaneNetwork {
             occupant: vec![None; TOTAL_SEGMENTS],
         }
     }
+}
+
+impl LaneNetwork {
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Shortest path from `src` to `dst` (BFS, unweighted).
     /// Returns the sequence of segments to traverse *excluding* `src`.
@@ -117,7 +117,7 @@ impl LaneNetwork {
         if src == dst {
             return Some(Vec::new());
         }
-        let mut visited = vec![false; TOTAL_SEGMENTS];
+        let mut visited = [false; TOTAL_SEGMENTS];
         let mut parent = vec![usize::MAX; TOTAL_SEGMENTS];
         let mut queue = VecDeque::new();
         visited[src] = true;
@@ -172,7 +172,7 @@ impl LaneNetwork {
 // ── Wait-for graph (deadlock detection) ─────────────────────────────
 /// Tracks which AGV is waiting for which other AGV. A cycle in this
 /// graph means deadlock.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct WaitForGraph {
     /// agv_a → agv_b means "a is waiting for b to release a segment."
     edges: HashMap<AgvId, AgvId>,
@@ -180,9 +180,7 @@ pub struct WaitForGraph {
 
 impl WaitForGraph {
     pub fn new() -> Self {
-        Self {
-            edges: HashMap::new(),
-        }
+        Self::default()
     }
 
     pub fn clear(&mut self) {

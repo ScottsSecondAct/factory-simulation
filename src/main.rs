@@ -196,12 +196,14 @@ impl World {
                         eprintln!("[{now:.1}s] REPAIR: AGV {aid} back online");
                     }
                 }
-                out.push(self.fault_inj.schedule_next_fault(&mut self.rng, now, target));
+                out.push(
+                    self.fault_inj
+                        .schedule_next_fault(&mut self.rng, now, target),
+                );
             }
 
             Event::SchedulerTick => {
-                self.metrics
-                    .sample_queue(self.scheduler.job_queue.len());
+                self.metrics.sample_queue(self.scheduler.job_queue.len());
                 self.metrics
                     .maybe_snapshot(now, &self.mills, &self.agvs, &self.scheduler);
                 let sched_events = self.scheduler.tick(
@@ -381,11 +383,18 @@ fn main() {
         println!("{}", serde_json::to_string_pretty(&summary).unwrap());
     } else {
         eprintln!("\n═══ Simulation Summary ═══");
-        eprintln!("Duration:           {:.0}s ({:.1} hours)", duration, duration / 3600.0);
+        eprintln!(
+            "Duration:           {:.0}s ({:.1} hours)",
+            duration,
+            duration / 3600.0
+        );
         eprintln!("Events processed:   {}", summary.events_processed);
         eprintln!("Jobs dispatched:    {}", summary.jobs_dispatched);
         eprintln!("Parts completed:    {}", summary.jobs_completed);
-        eprintln!("Avg utilization:    {:.1}%", summary.avg_utilization * 100.0);
+        eprintln!(
+            "Avg utilization:    {:.1}%",
+            summary.avg_utilization * 100.0
+        );
         eprintln!("Avg queue depth:    {:.1}", summary.avg_queue_depth);
         eprintln!("Deadlocks detected: {}", summary.deadlocks_detected);
         eprintln!("Equipment faults:   {}", summary.total_faults);

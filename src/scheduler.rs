@@ -36,8 +36,8 @@ pub struct Scheduler {
     next_job_id: u64,
 }
 
-impl Scheduler {
-    pub fn new() -> Self {
+impl Default for Scheduler {
+    fn default() -> Self {
         Self {
             job_queue: VecDeque::new(),
             pending_missions: Vec::new(),
@@ -46,6 +46,12 @@ impl Scheduler {
             jobs_dispatched: 0,
             next_job_id: 1,
         }
+    }
+}
+
+impl Scheduler {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub fn next_id(&mut self) -> JobId {
@@ -98,6 +104,7 @@ impl Scheduler {
     }
 
     // ── Job dispatch ────────────────────────────────────────────────
+    #[allow(clippy::too_many_arguments)]
     fn dispatch_jobs(
         &mut self,
         now: SimTime,
@@ -122,7 +129,11 @@ impl Scheduler {
                 .iter()
                 .filter(|m| m.is_available())
                 .min_by_key(|m| {
-                    if !m.needs_tool_change(op.tool_set) { 0 } else { 1 }
+                    if !m.needs_tool_change(op.tool_set) {
+                        0
+                    } else {
+                        1
+                    }
                 })
                 .map(|m| m.id);
 
@@ -195,6 +206,7 @@ impl Scheduler {
     }
 
     // ── AGV advancement ─────────────────────────────────────────────
+    #[allow(clippy::needless_range_loop)]
     fn try_advance_agvs(
         &mut self,
         now: SimTime,
@@ -249,7 +261,7 @@ impl Scheduler {
         now: SimTime,
         agvs: &mut [Agv],
         lanes: &mut LaneNetwork,
-        events: &mut Vec<TimedEvent>,
+        _events: &mut Vec<TimedEvent>,
     ) {
         // Build wait-for graph from current AGV states.
         self.wait_graph.clear();
@@ -285,9 +297,7 @@ impl Scheduler {
                 // Re-claim current position.
                 lanes.claim(cur, victim_id);
 
-                eprintln!(
-                    "[{now:.1}s] DEADLOCK resolved: retreated AGV {victim_id} at seg {cur}"
-                );
+                eprintln!("[{now:.1}s] DEADLOCK resolved: retreated AGV {victim_id} at seg {cur}");
             }
         }
     }

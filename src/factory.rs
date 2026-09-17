@@ -55,7 +55,7 @@ impl Mill {
     }
 
     pub fn needs_tool_change(&self, required: ToolSetId) -> bool {
-        self.loaded_tool.map_or(true, |t| t != required)
+        !self.loaded_tool.is_some_and(|t| t == required)
     }
 
     pub fn begin_loading(&mut self) {
