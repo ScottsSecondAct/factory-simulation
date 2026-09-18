@@ -59,6 +59,7 @@ pub struct ReadyConfig {
     pub pallet_types: u8,
     pub loop_segments: usize,
     pub total_segments: usize,
+    pub max_wip: usize,
 }
 
 #[derive(Serialize)]
@@ -153,6 +154,9 @@ pub struct MetricsSnap {
     pub avg_queue_depth: f64,
     pub deadlocks: u64,
     pub faults: u64,
+    pub wip: usize,
+    pub max_wip: usize,
+    pub back_pressure_events: u64,
 }
 
 #[derive(Serialize)]
@@ -163,6 +167,7 @@ pub struct SummaryMsg {
     pub jobs_dispatched: u64,
     pub deadlocks_detected: u64,
     pub total_faults: u64,
+    pub back_pressure_events: u64,
     pub mill_utilization: Vec<f64>,
     pub avg_utilization: f64,
     pub avg_queue_depth: f64,
@@ -205,6 +210,7 @@ pub struct IpcConfig {
     pub tool_copies: u16,
     pub pallet_types: u8,
     pub pallet_copies: usize,
+    pub max_wip: usize,
 }
 
 // ── IPC runner ─────────────────────────────────────────────────────
@@ -270,13 +276,16 @@ impl IpcRunner {
             }
         });
 
+        let mut scheduler = Scheduler::new();
+        scheduler.max_wip = config.max_wip;
+
         Self {
             mills,
             agvs,
             lanes,
             tool_crib,
             pallet_mag,
-            scheduler: Scheduler::new(),
+            scheduler,
             fault_inj,
             metrics,
             engine,
@@ -348,6 +357,7 @@ impl IpcRunner {
                 "mill_mtbf" => self.fault_inj.config.mill_mtbf = value,
                 "agv_mtbf" => self.fault_inj.config.agv_mtbf = value,
                 "snapshot_interval" => self.config.snapshot_interval = value,
+                "max_wip" => self.scheduler.max_wip = value as usize,
                 _ => eprintln!("[WARN] unknown param: {param}"),
             },
             InCommand::Step { count } => {
@@ -419,6 +429,7 @@ impl IpcRunner {
                 pallet_types: self.config.pallet_types,
                 loop_segments: LOOP_SEGMENTS,
                 total_segments: TOTAL_SEGMENTS,
+                max_wip: self.scheduler.max_wip,
             },
             layout: LayoutInfo {
                 mills: mill_layouts,
@@ -523,6 +534,9 @@ impl IpcRunner {
                 avg_queue_depth: 0.0,
                 deadlocks: self.scheduler.deadlocks_detected,
                 faults: self.fault_inj.total_faults,
+                wip: Scheduler::wip_count(&self.mills),
+                max_wip: self.scheduler.max_wip,
+                back_pressure_events: self.scheduler.back_pressure_events,
             },
         };
 
@@ -597,6 +611,7 @@ impl IpcRunner {
             jobs_dispatched: self.scheduler.jobs_dispatched,
             deadlocks_detected: self.scheduler.deadlocks_detected,
             total_faults: self.fault_inj.total_faults,
+            back_pressure_events: self.scheduler.back_pressure_events,
             mill_utilization: utilizations,
             avg_utilization: avg_util,
             avg_queue_depth: 0.0,

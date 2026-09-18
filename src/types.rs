@@ -38,6 +38,7 @@ pub const TOOL_CHANGE_TIME: SimTime = 120.0;
 pub const TOOL_ISSUE_TIME: SimTime = 30.0;
 pub const PALLET_ISSUE_TIME: SimTime = 20.0;
 pub const SCHEDULER_INTERVAL: SimTime = 5.0;
+pub const DEFAULT_MAX_WIP: usize = 20;
 
 // ── Mill state machine ──────────────────────────────────────────────
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

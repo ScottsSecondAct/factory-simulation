@@ -258,6 +258,7 @@ fn main() {
     let mut mill_mtbf = 28_800.0;
     let mut agv_mtbf = 43_200.0;
     let mut seed: u64 = 42;
+    let mut max_wip: usize = DEFAULT_MAX_WIP;
 
     let mut i = 1;
     while i < args.len() {
@@ -282,6 +283,10 @@ fn main() {
                 i += 1;
                 seed = args[i].parse().expect("invalid seed");
             }
+            "--max-wip" => {
+                i += 1;
+                max_wip = args[i].parse().expect("invalid max-wip");
+            }
             "--no-faults" => faults_enabled = false,
             "--json" => json_output = true,
             "--snapshots" => snapshots_output = true,
@@ -296,6 +301,7 @@ fn main() {
                        --mill-mtbf SECS         Mean time between mill failures\n  \
                        --agv-mtbf SECS          Mean time between AGV failures\n  \
                        --seed N                 RNG seed (default: 42)\n  \
+                       --max-wip N              WIP limit for back-pressure (default: 20)\n  \
                        --no-faults              Disable fault injection\n  \
                        --json                   Output summary as JSON\n  \
                        --snapshots              Output snapshots + summary as JSON\n  \
@@ -325,6 +331,7 @@ fn main() {
             tool_copies: 4,
             pallet_types: 4,
             pallet_copies: 8,
+            max_wip,
         };
         let mut runner = IpcRunner::new(config);
         runner.run();
@@ -339,6 +346,7 @@ fn main() {
         ..FaultConfig::default()
     };
     let mut world = World::new(fault_cfg);
+    world.scheduler.max_wip = max_wip;
     let mut engine = SimEngine::new();
 
     let first_job = world.generate_job(0.0);
@@ -397,6 +405,7 @@ fn main() {
         );
         eprintln!("Avg queue depth:    {:.1}", summary.avg_queue_depth);
         eprintln!("Deadlocks detected: {}", summary.deadlocks_detected);
+        eprintln!("Back-pressure:      {}", summary.back_pressure_events);
         eprintln!("Equipment faults:   {}", summary.total_faults);
         eprintln!(
             "Throughput:         {:.1} parts/hr",

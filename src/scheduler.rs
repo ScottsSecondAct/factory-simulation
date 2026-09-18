@@ -33,7 +33,10 @@ pub struct Scheduler {
     pub wait_graph: WaitForGraph,
     pub deadlocks_detected: u64,
     pub jobs_dispatched: u64,
+    pub back_pressure_events: u64,
+    pub max_wip: usize,
     next_job_id: u64,
+    was_back_pressured: bool,
 }
 
 impl Default for Scheduler {
@@ -44,7 +47,10 @@ impl Default for Scheduler {
             wait_graph: WaitForGraph::new(),
             deadlocks_detected: 0,
             jobs_dispatched: 0,
+            back_pressure_events: 0,
+            max_wip: DEFAULT_MAX_WIP,
             next_job_id: 1,
+            was_back_pressured: false,
         }
     }
 }
@@ -103,6 +109,14 @@ impl Scheduler {
         events
     }
 
+    /// Count jobs currently in flight (mills actively processing work).
+    pub fn wip_count(mills: &[Mill]) -> usize {
+        mills
+            .iter()
+            .filter(|m| m.state != MillState::Idle && m.state != MillState::Faulted)
+            .count()
+    }
+
     // ── Job dispatch ────────────────────────────────────────────────
     #[allow(clippy::too_many_arguments)]
     fn dispatch_jobs(
@@ -116,8 +130,20 @@ impl Scheduler {
         events: &mut Vec<TimedEvent>,
     ) {
         let mut assigned = Vec::new();
+        let mut wip = Self::wip_count(mills);
 
         for (qi, job) in self.job_queue.iter().enumerate() {
+            if wip >= self.max_wip {
+                self.back_pressure_events += 1;
+                if !self.was_back_pressured {
+                    self.was_back_pressured = true;
+                    eprintln!(
+                        "[{now:.1}s] BACK-PRESSURE: WIP at limit ({}/{}), holding dispatch",
+                        wip, self.max_wip
+                    );
+                }
+                break;
+            }
             if job.operations.is_empty() {
                 continue;
             }
@@ -196,7 +222,16 @@ impl Scheduler {
             }
 
             self.jobs_dispatched += 1;
+            wip += 1;
             assigned.push(qi);
+        }
+
+        if wip < self.max_wip && self.was_back_pressured {
+            self.was_back_pressured = false;
+            eprintln!(
+                "[{now:.1}s] BACK-PRESSURE relieved: WIP {wip}/{}",
+                self.max_wip
+            );
         }
 
         // Remove assigned jobs (iterate in reverse to keep indices valid).

@@ -39,6 +39,7 @@ export interface ReadyConfig {
   pallet_types: number;
   loop_segments: number;
   total_segments: number;
+  max_wip: number;
 }
 
 export interface MillLayout {
@@ -105,6 +106,9 @@ export interface MetricsSnap {
   avg_queue_depth: number;
   deadlocks: number;
   faults: number;
+  wip: number;
+  max_wip: number;
+  back_pressure_events: number;
 }
 
 export interface Snapshot {
@@ -145,6 +149,7 @@ export interface SummaryMessage {
   jobs_dispatched: number;
   deadlocks_detected: number;
   total_faults: number;
+  back_pressure_events: number;
   mill_utilization: number[];
   avg_utilization: number;
   avg_queue_depth: number;

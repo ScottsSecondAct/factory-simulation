@@ -36,6 +36,8 @@ export function MetricsPanel() {
           </div>
           <span style={{ ...styles.value, color: utilColor }}>{utilPct}%</span>
         </div>
+        <MetricRow label="WIP" value={`${m.wip}/${m.max_wip}`} />
+        <MetricRow label="Back-pressure" value={String(m.back_pressure_events)} />
         <MetricRow label="Queue" value={String(snapshot.job_queue.depth)} />
         <MetricRow label="Deadlocks" value={String(m.deadlocks)} />
         <MetricRow label="Faults" value={String(m.faults)} />
