@@ -34,6 +34,7 @@ keeps the event flow traceable.
 | `world.rs` | World aggregate, event dispatch | CLI, batch-mode loop |
 | `factory.rs` | Mill FSM, ToolCrib, PalletMagazine, WorkPrepStation | Scheduling decisions |
 | `agv.rs` | AGV/AMR state, LaneNetwork, WaitForGraph | Route selection policy |
+| `strategy.rs` | SchedulingStrategy trait, FIFO/SPT/EDD/Weighted impls | Scheduler integration |
 | `scheduler.rs` | Job dispatch, look-ahead, deadlock detection | Equipment state transitions |
 | `fault.rs` | Stochastic failure model (mills, AGVs, AMRs, work prep) | Repair logic beyond duration |
 | `reconcile.rs` | Periodic state reconciliation, drift detection | Corrective actions |

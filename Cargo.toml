@@ -1,6 +1,6 @@
 [package]
 name = "factory-sim"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Discrete-event factory orchestration simulator: 25 mills, AGV fleet, tool crib, pallet magazine, scheduling with deadlock detection and fault injection"
 license = "MIT"

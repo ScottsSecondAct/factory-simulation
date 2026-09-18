@@ -1,6 +1,6 @@
 # Roadmap
 
-## v0.1 — Current (MVP)
+## v0.1 — MVP
 
 - Core simulation engine (event-driven, min-heap scheduler)
 - 25 CNC mills as finite state machines (Idle, WaitingPallet, WaitingTool, Loading, Machining, Unloading, ToolChange, Faulted, ChipFull)
@@ -21,10 +21,11 @@
 - Metrics: utilization, throughput, queue depth, fault counts, chip evacuations, WIP, back-pressure, reconciliation drifts
 - Event log with simulated-time timestamped display of simulation events
 
-## v0.2 — Scheduling & Quality
+## v0.2 — Current (Scheduling & Quality)
 
 ### Advanced Scheduling
-- Pluggable scheduling strategies (FIFO, shortest-processing-time, earliest-due-date, weighted priority) with live A/B comparison
+- Pluggable scheduling strategies (FIFO, SPT, EDD, Weighted Priority) with runtime switching via CLI and dashboard ✅
+- A/B comparison mode — run two strategies side-by-side with identical seeds, lockstep advancement, and live metric deltas ✅
 - Multi-operation job chains — jobs with sequential ops across different mills, enforcing precedence constraints
 - Setup-aware sequencing — minimize changeovers by grouping jobs that share tool sets and pallet types (SMED-inspired)
 - Due-date-driven scheduling with tardiness penalty functions and configurable urgency escalation

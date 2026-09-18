@@ -22,6 +22,7 @@ World::handle(event) --> dispatches to subsystems --> returns new events
     +-- factory.rs    Mill state machines, ToolCrib, PalletMagazine
     +-- agv.rs        AGV fleet, LaneNetwork (segment locking, BFS routing)
     +-- scheduler.rs  Job dispatch, look-ahead, deadlock detection
+    +-- strategy.rs   Pluggable scheduling strategies (FIFO, SPT, EDD, Weighted)
     +-- fault.rs      Stochastic failure model (MTBF/repair)
     +-- metrics.rs    Snapshots, utilization, throughput, JSON output
     +-- ipc.rs        Dashboard IPC protocol (JSON-lines on stdio)
@@ -76,6 +77,8 @@ The dashboard launches the sim binary automatically in IPC mode. It expects the 
 | `--seed N` | RNG seed for reproducible runs | `42` |
 | `--max-wip N` | WIP limit for back-pressure | `20` |
 | `--num-amrs N` | Number of AMRs in the fleet | `2` |
+| `--strategy NAME` | Scheduling strategy: `fifo`, `spt`, `edd`, `weighted` | `fifo` |
+| `--ab NAME` | Run A/B comparison against a second strategy | off |
 
 ## IPC Protocol
 
@@ -83,7 +86,7 @@ When launched with `--ipc`, the sim communicates over stdio using JSON-lines (on
 
 **Outgoing (sim -> dashboard on stdout):**
 
-- `{"type":"ready", ...}` -- sent once at startup with configuration, layout geometry, and initial state
+- `{"type":"ready", ...}` -- sent once at startup with configuration, layout geometry, initial state, active strategy, and available strategies
 - `{"type":"snapshot", ...}` -- periodic state snapshot (mill states, AGV positions, resources, metrics)
 - `{"type":"event", ...}` -- discrete events (faults, repairs, deadlocks, job completions)
 - `{"type":"summary", ...}` -- final summary at simulation end
@@ -97,6 +100,9 @@ When launched with `--ipc`, the sim communicates over stdio using JSON-lines (on
 - `{"type":"inject_fault", "target": {"Mill": 5}}` -- manually trigger a fault
 - `{"type":"set_param", "param": "mill_mtbf", "value": 14400}` -- change a parameter at runtime
 - `{"type":"step", "count": 100}` -- advance N events then pause
+- `{"type":"set_strategy", "strategy": "ShortestProcessingTime"}` -- switch scheduling strategy at runtime
+- `{"type":"start_ab", "strategy": "EarliestDueDate"}` -- start A/B comparison with a second strategy
+- `{"type":"stop_ab"}` -- stop A/B comparison
 
 Diagnostic messages go to stderr with severity prefixes, separate from protocol traffic.
 
@@ -108,6 +114,8 @@ Diagnostic messages go to stderr with severity prefixes, separate from protocol 
 - **Job queue panel** -- current queue depth with priority breakdown
 - **Trend charts** -- time-series plots of utilization and throughput
 - **Event log** -- timestamped simulation events (faults, repairs, deadlocks)
+- **Scheduling strategy selector** -- switch between FIFO, SPT, EDD, and Weighted Priority at runtime
+- **A/B comparison mode** -- run two strategies side-by-side with live metric deltas (throughput, utilization, WIP, deadlocks)
 - **Control bar** -- play/pause, speed control, fault injection, simulation reset
 
 ## Project Structure
@@ -121,6 +129,7 @@ factory-simulation/
 |   +-- factory.rs          Mill FSM, ToolCrib, PalletMagazine, WorkPrepStation
 |   +-- agv.rs              AGV state, LaneNetwork, WaitForGraph
 |   +-- scheduler.rs        Job dispatch, look-ahead, deadlock detection
+|   +-- strategy.rs         Pluggable scheduling strategies (trait + 4 impls)
 |   +-- fault.rs            Stochastic failure model
 |   +-- reconcile.rs        Periodic state reconciliation pass
 |   +-- metrics.rs          Snapshots, summaries, JSON serialization
@@ -142,6 +151,7 @@ factory-simulation/
 |   |           +-- TrendChart.tsx
 |   |           +-- EventLog.tsx
 |   |           +-- ControlBar.tsx
+|   |           +-- AbComparisonPanel.tsx
 |   +-- package.json
 |   +-- electron.vite.config.ts
 +-- Cargo.toml

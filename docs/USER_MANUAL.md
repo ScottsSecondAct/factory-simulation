@@ -242,6 +242,23 @@ Jobs arrive stochastically following a **Poisson process** with a mean inter-arr
 
 The queue is maintained in **priority order** (stable within the same priority level — earlier arrivals go first among equal-priority jobs). The scheduler processes the highest-priority feasible job first.
 
+### 3.7 Scheduling Strategies
+
+The scheduler uses a **pluggable strategy** to select which job to dispatch next from the queue. Four built-in strategies are available:
+
+| Strategy | CLI name | Selection rule | When it wins |
+|---|---|---|---|
+| **FIFO** | `fifo` | Arrival order (first in, first out) | Baseline fairness |
+| **SPT** | `spt` | Shortest total processing time first | Maximizes throughput, minimizes avg flow time |
+| **EDD** | `edd` | Earliest due date first (jobs without due dates go last) | Minimizes max tardiness |
+| **Weighted Priority** | `weighted` | Composite score: `w1*priority + w2*wait_time + w3*processing_time + w4*due_urgency` | Tunable multi-objective |
+
+The default strategy is **FIFO**. Strategies can be switched at runtime via the `--strategy` CLI flag or the `set_strategy` IPC command from the dashboard.
+
+**Due dates:** 70% of arriving jobs are assigned a due date calculated as `arrival_time + total_processing_time * (2.0 + random * 3.0)`, giving a deadline 2–5x the processing time after arrival. The remaining 30% have no due date and are treated as lowest urgency by EDD and Weighted strategies.
+
+**Weighted Priority scoring:** The composite score is `WEIGHT_PRIORITY * priority + WEIGHT_WAIT_TIME * wait_time + WEIGHT_PROCESSING_TIME * processing_time + WEIGHT_DUE_DATE * due_urgency`. Default weights are configured in `types.rs`: priority=10.0, wait_time=0.01, processing_time=-0.005, due_urgency=0.02. The job with the highest score is dispatched first.
+
 ---
 
 ## 4. Scheduling Engine
@@ -491,6 +508,12 @@ cargo run --release -- --duration 14400 --mill-mtbf 14400 --agv-mtbf 21600 --see
 
 # WIP limit and fleet composition
 cargo run --release -- --duration 28800 --max-wip 15 --num-amrs 4
+
+# Use shortest-processing-time scheduling
+cargo run --release -- --duration 28800 --strategy spt
+
+# A/B comparison: FIFO vs EDD side-by-side
+cargo run --release -- --duration 28800 --strategy fifo --ab edd
 ```
 
 ### 9.4 CLI Flags Reference
@@ -508,6 +531,8 @@ cargo run --release -- --duration 28800 --max-wip 15 --num-amrs 4
 | `--seed` | integer | 42 | RNG seed for reproducible runs |
 | `--max-wip` | integer | 20 | Maximum work-in-progress before back-pressure holds dispatch |
 | `--num-amrs` | integer | 2 | Number of AMRs in the fleet (in addition to the 6 AGVs) |
+| `--strategy` | string | `fifo` | Scheduling strategy: `fifo`, `spt`, `edd`, or `weighted` |
+| `--ab` | string | off | Run A/B comparison against a second strategy (e.g., `--ab spt`) |
 
 ### 9.5 Batch Output
 
@@ -539,7 +564,33 @@ Equipment faults:   24
 Throughput:         6.9 parts/hr
 ```
 
-### 9.6 JSON Output
+### 9.6 A/B Comparison Mode
+
+When `--ab <strategy>` is specified alongside `--strategy`, the simulator runs **two independent worlds** in lockstep with the same RNG seed but different scheduling strategies. This allows direct comparison of how strategy choice affects throughput, utilization, and other metrics under identical conditions.
+
+```bash
+# Compare FIFO against Weighted Priority over 8 hours
+cargo run --release -- --strategy fifo --ab weighted --duration 28800
+
+# Compare SPT against EDD without fault noise
+cargo run --release -- --strategy spt --ab edd --no-faults --duration 14400
+```
+
+The batch output includes side-by-side summaries for both strategies plus a delta section:
+
+```
+═══ Strategy A (FIFO) ═══
+Throughput:         6.8 parts/hr
+═══ Strategy B (Weighted) ═══
+Throughput:         6.8 parts/hr
+═══ A/B Delta ═══
+Throughput:    A=6.8  B=6.8  delta=0.0 parts/hr
+Utilization:   A=4.5%  B=4.5%
+```
+
+Both worlds share the same seed and fault schedule, so any differences in output are attributable to the scheduling strategy alone. The A/B comparison can also be started and stopped at runtime from the dashboard using the A/B toggle button.
+
+### 9.7 JSON Output
 
 With `--json`, the summary is emitted as structured JSON to stdout:
 
@@ -587,6 +638,8 @@ The top bar provides transport controls:
 - **Stop** — Terminates the simulation and displays the final summary.
 - **Speed selector** — Cycles through speed multipliers: 1×, 4×, 16×, 64×, 256×. Higher speeds process more events per batch.
 - **Fault Mill / Fault AGV** — Manually injects a fault on a random non-faulted piece of equipment for testing failure response.
+- **Strategy selector** — Dropdown to switch the active scheduling strategy (FIFO, SPT, EDD, Weighted) at runtime. Sends a `set_strategy` command to the sim.
+- **A/B toggle** — Starts or stops A/B comparison mode. When active, a second dropdown appears to select the B strategy. The sim runs two independent worlds in lockstep.
 - **Clock display** — Shows the current simulated time as HH:MM:SS.
 - **Config summary** — Displays duration, seed, and fault status.
 
@@ -605,7 +658,20 @@ The main visualization is an SVG rendering of the factory floor showing:
 - **Lane network** — The 20-segment loop and 25 spur segments drawn as lines
 - **Vehicle positions** — AGVs shown as cyan circles labeled by ID number; AMRs shown as purple diamonds labeled "M". Each vehicle displays a projected path polyline showing its planned route. Faulted vehicles pulse red.
 
-### 10.4 Metrics Panel
+### 10.4 A/B Comparison Panel
+
+When A/B mode is active, a comparison panel appears in the sidebar between the Metrics Panel and the Resource Panel. It displays a grid comparing Strategy A (the primary) against Strategy B (the challenger) across six metrics:
+
+- **Throughput** — total parts completed
+- **Rate/hr** — throughput rate in parts per hour
+- **Utilization** — average mill utilization percentage
+- **WIP** — current work-in-progress count
+- **Deadlocks** — total deadlocks detected
+- **Back-pressure** — total back-pressure events
+
+Each row shows the A value, the B value, and a color-coded delta: green when B is better, red when B is worse, gray when equal. For deadlocks and back-pressure, lower is better (reversed polarity).
+
+### 10.5 Metrics Panel
 
 Displays key performance indicators updated in real time:
 
@@ -626,14 +692,14 @@ Displays key performance indicators updated in real time:
 
 Each utilization metric includes a visual bar indicator.
 
-### 10.5 Resource Panel
+### 10.6 Resource Panel
 
 Shows the current inventory state of both shared resource pools:
 
 - **Tool Crib** — Available copies per tool set type (0–7), with badges showing count
 - **Pallet Magazine** — Available pallets per fixture type (0–3), with badges showing count
 
-### 10.6 Job Queue Panel
+### 10.7 Job Queue Panel
 
 Displays the next 8 jobs in the priority queue with:
 
@@ -642,7 +708,7 @@ Displays the next 8 jobs in the priority queue with:
 - Number of operations
 - Wait time (how long the job has been in the queue)
 
-### 10.7 Trend Charts
+### 10.8 Trend Charts
 
 A Canvas 2D time-series chart with a dropdown to select between four metrics:
 
@@ -653,7 +719,7 @@ A Canvas 2D time-series chart with a dropdown to select between four metrics:
 
 The chart maintains a rolling history of up to 1,800 data points (30 minutes at 1-second snapshot intervals).
 
-### 10.8 Event Log
+### 10.9 Event Log
 
 The bottom panel shows a scrolling log of simulation events with:
 
@@ -697,7 +763,9 @@ Sent once at startup with configuration and factory layout.
     "pallet_types": 4,
     "loop_segments": 20,
     "total_segments": 45,
-    "max_wip": 20
+    "max_wip": 20,
+    "strategy": "Fifo",
+    "available_strategies": ["Fifo", "ShortestProcessingTime", "EarliestDueDate", "WeightedPriority"]
   },
   "layout": {
     "mills": [{"id": 0, "row": 0, "col": 0, "loop_seg": 2, "spur_seg": 20}, ...],
@@ -719,7 +787,7 @@ Periodic state snapshot (default: every 1 second of simulated time).
   "tool_crib": {"inventory": {"0": 3, "1": 4, ...}, "total_issues": 156},
   "pallet_magazine": {"available": {"0": 6, "1": 7, ...}, "total_issued": 132},
   "job_queue": {"depth": 5, "next_8": [{"id": 44, "priority": "Normal", "ops": 2, "wait_time": 45.3}, ...]},
-  "metrics": {"throughput": 28, "throughput_rate": 6.7, "avg_utilization": 0.047, "avg_queue_depth": 0.2, "deadlocks": 598, "faults": 12, "wip": 3, "max_wip": 20, "back_pressure_events": 0, "chip_evacuations": 510, "work_prep_jobs": 40, "work_prep_queue": 1, "work_prep_state": "Processing", "reconciliation_passes": 480, "reconciliation_drifts": 830, "max_drifts_in_pass": 15}
+  "metrics": {"throughput": 28, "throughput_rate": 6.7, "avg_utilization": 0.047, "avg_queue_depth": 0.2, "deadlocks": 598, "faults": 12, "wip": 3, "max_wip": 20, "back_pressure_events": 0, "chip_evacuations": 510, "work_prep_jobs": 40, "work_prep_queue": 1, "work_prep_state": "Processing", "reconciliation_passes": 480, "reconciliation_drifts": 830, "max_drifts_in_pass": 15, "strategy": "Fifo", "ab_metrics": null}
 }
 ```
 
@@ -748,6 +816,9 @@ Final summary sent when the simulation ends.
 | `inject_fault` | `{"type":"inject_fault","target":{"Mill":5}}` | Force a fault on a specific target |
 | `set_param` | `{"type":"set_param","param":"mill_mtbf","value":14400}` | Change a parameter at runtime (supports `mill_mtbf`, `agv_mtbf`, `max_wip`) |
 | `step` | `{"type":"step","count":100}` | Advance N events then pause |
+| `set_strategy` | `{"type":"set_strategy","strategy":"ShortestProcessingTime"}` | Switch scheduling strategy at runtime |
+| `start_ab` | `{"type":"start_ab","strategy":"EarliestDueDate"}` | Start A/B comparison with a second strategy |
+| `stop_ab` | `{"type":"stop_ab"}` | Stop A/B comparison and discard the B world |
 
 ---
 
@@ -827,4 +898,6 @@ The current count of mills actively processing work (any state other than Idle, 
 | **Wait-for graph** | A directed graph where an edge from vehicle A to vehicle B means A is blocked waiting for a segment that B occupies. A cycle in this graph indicates deadlock. |
 | **WIP** | Work in Progress — the count of mills actively processing jobs (not Idle, not Faulted). Controlled by the `max_wip` admission limit. |
 | **Work prep station** | A robotic billet loading station at loop segment 15 that clamps raw stock onto pallet fixtures before mill delivery. Single-server queue with max depth 4. |
+| **Scheduling strategy** | A pluggable algorithm that selects which job to dispatch next from the queue. Four built-in strategies: FIFO, SPT (Shortest Processing Time), EDD (Earliest Due Date), and Weighted Priority. |
+| **A/B comparison** | Running two simulation worlds in lockstep with different scheduling strategies but the same RNG seed, to directly compare their impact on metrics. |
 | **Yield** | When an idle vehicle blocks an active vehicle's path, the scheduler moves the idle vehicle to the nearest free loop segment. |
