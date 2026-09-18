@@ -1,17 +1,64 @@
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, ipcMain, nativeImage } from "electron";
 import { join } from "path";
+import { existsSync } from "fs";
 import { SimManager } from "./sim";
 
 let mainWindow: BrowserWindow | null = null;
+let splashWindow: BrowserWindow | null = null;
 const sim = new SimManager();
 
+const SPLASH_DURATION_MS = 5000;
+
+function resourcePath(name: string): string {
+  // In production (packaged): resources are in extraResources
+  const prodPath = join(process.resourcesPath, "resources", name);
+  if (existsSync(prodPath)) return prodPath;
+  // In dev: resources directory is at project root
+  return join(__dirname, "../../resources", name);
+}
+
+function getAppIcon(): Electron.NativeImage | undefined {
+  if (process.platform === "win32") {
+    return nativeImage.createFromPath(resourcePath("icon.ico"));
+  }
+  return nativeImage.createFromPath(resourcePath("icon.png"));
+}
+
+function createSplashWindow(): void {
+  const icon = getAppIcon();
+  splashWindow = new BrowserWindow({
+    width: 720,
+    height: 405,
+    frame: false,
+    resizable: false,
+    transparent: false,
+    center: true,
+    skipTaskbar: false,
+    backgroundColor: "#101820",
+    icon,
+    show: false,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+
+  splashWindow.loadFile(resourcePath("splash/splash.html"));
+  splashWindow.once("ready-to-show", () => {
+    splashWindow?.show();
+  });
+}
+
 function createWindow(): void {
+  const icon = getAppIcon();
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
     minWidth: 1024,
     minHeight: 700,
     backgroundColor: "#0f1117",
+    icon,
+    show: false,
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
       contextIsolation: true,
@@ -24,9 +71,42 @@ function createWindow(): void {
   } else {
     mainWindow.loadFile(join(__dirname, "../renderer/index.html"));
   }
+
 }
 
-app.whenReady().then(createWindow);
+function showMainAfterSplash(): void {
+  let mainReady = false;
+  let timerDone = false;
+
+  const tryShow = (): void => {
+    if (mainReady && timerDone) {
+      splashWindow?.close();
+      splashWindow = null;
+      mainWindow?.show();
+    }
+  };
+
+  mainWindow?.once("ready-to-show", () => {
+    mainReady = true;
+    tryShow();
+  });
+
+  setTimeout(() => {
+    timerDone = true;
+    tryShow();
+  }, SPLASH_DURATION_MS);
+}
+
+app.whenReady().then(() => {
+  if (process.platform === "darwin" && app.dock) {
+    const dockIcon = nativeImage.createFromPath(resourcePath("icon.png"));
+    if (!dockIcon.isEmpty()) app.dock.setIcon(dockIcon);
+  }
+  createSplashWindow();
+  createWindow();
+  showMainAfterSplash();
+});
+
 app.on("window-all-closed", () => {
   sim.kill();
   app.quit();

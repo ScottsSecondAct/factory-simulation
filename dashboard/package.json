@@ -8,6 +8,36 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview"
   },
+  "build": {
+    "appId": "com.scottdavis.factory-simulation",
+    "productName": "Factory Orchestration Simulator",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "out/**/*",
+      "resources/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "resources",
+        "to": "resources"
+      }
+    ],
+    "win": {
+      "icon": "resources/icon.ico",
+      "target": ["nsis"]
+    },
+    "mac": {
+      "icon": "resources/icon.icns",
+      "target": ["dmg"]
+    },
+    "linux": {
+      "icon": "resources/icon.png",
+      "target": ["AppImage"],
+      "category": "Utility"
+    }
+  },
   "dependencies": {
     "zustand": "^5.0.0"
   },

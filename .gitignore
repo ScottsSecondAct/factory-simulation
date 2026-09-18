@@ -19,3 +19,10 @@ Thumbs.db
 # Environment
 .env
 .env.local
+
+# Image package source files (assets already copied to dashboard/resources)
+Factory_Automation_Image_Package.zip
+Factory_Automation_Image_Package_extracted/
+
+# Claude Code launch config
+.claude/launch.json

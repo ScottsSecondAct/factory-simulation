@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Factory Simulation</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      overflow: hidden;
+      background: #101820;
+      font-family: "Segoe UI", "SF Pro Display", "Inter", -apple-system, system-ui, sans-serif;
+      -webkit-app-region: drag;
+      user-select: none;
+    }
+    .splash {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+    }
+    .splash img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .overlay {
+      position: absolute;
+      top: 0;
+      right: 0;
+      width: 45%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: flex-start;
+      padding: 0 48px;
+    }
+    .title {
+      font-size: 28px;
+      font-weight: 700;
+      color: #e2e4e9;
+      letter-spacing: 0.5px;
+      margin-bottom: 8px;
+    }
+    .subtitle {
+      font-size: 14px;
+      font-weight: 400;
+      color: #405668;
+      letter-spacing: 0.3px;
+      margin-bottom: 24px;
+    }
+    .loader {
+      width: 120px;
+      height: 2px;
+      background: rgba(64, 86, 104, 0.3);
+      border-radius: 1px;
+      overflow: hidden;
+    }
+    .loader-bar {
+      width: 0%;
+      height: 100%;
+      background: #00D9EF;
+      border-radius: 1px;
+      animation: fill 5s linear forwards;
+    }
+    @keyframes fill {
+      from { width: 0%; }
+      to { width: 100%; }
+    }
+    .version {
+      position: absolute;
+      bottom: 20px;
+      right: 28px;
+      font-size: 11px;
+      color: #405668;
+    }
+  </style>
+</head>
+<body>
+  <div class="splash">
+    <img src="splash.png" alt="" />
+    <div class="overlay">
+      <div class="title">Factory Orchestration Simulator</div>
+      <div class="subtitle">Discrete-Event Manufacturing Simulation</div>
+      <div class="loader"><div class="loader-bar"></div></div>
+    </div>
+    <div class="version">v0.1.0</div>
+  </div>
+</body>
+</html>
