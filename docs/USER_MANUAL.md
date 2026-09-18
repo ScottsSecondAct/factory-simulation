@@ -357,7 +357,7 @@ The chip level check occurs after the unloading phase completes. If `chip_level 
 
 ### 6.3 Evacuation Process
 
-1. The scheduler detects a mill in ChipFull state during Phase 2 (Chip Evacuation Dispatch).
+1. The scheduler detects a mill in ChipFull state during Phase 3 (Chip Evacuation Dispatch).
 2. An idle AGV is dispatched to the mill's spur with `ChipBin(mill_id)` cargo.
 3. The AGV travels to the spur (standard segment-by-segment movement, subject to lane contention).
 4. On arrival, a **60-second evacuation timer** begins (`CHIP_EVAC_TIME`).
@@ -369,7 +369,7 @@ The **chip station** (waste disposal point) is located at **loop segment 5**, po
 
 ### 6.5 Scheduling Priority
 
-Chip evacuation has **lower priority than production dispatch** (Phase 1) but **higher priority than traffic management** (Phase 3). This ordering means:
+Chip evacuation has **lower priority than production dispatch** (Phase 2) but **higher priority than traffic management** (Phase 4). This ordering means:
 - Production jobs are dispatched first, using available vehicles.
 - Remaining idle vehicles are then assigned to chip evacuation.
 - A chip-full mill blocks until an AGV becomes available — extended high utilization can delay evacuation.
@@ -403,7 +403,7 @@ There is **no real-time clock**. Simulated time advances discretely from event t
 | Event | Trigger | Effect |
 |---|---|---|
 | `JobArrival` | Poisson process | Enqueues a new job; schedules the next arrival |
-| `SchedulerTick` | Every 5s | Runs all 7 scheduling phases |
+| `SchedulerTick` | Every 5s | Runs all 6 scheduling phases |
 | `MillLoadDone` | 45s after loading begins | Mill transitions to Machining |
 | `MillMachiningDone` | 300–900s after machining begins | Mill transitions to Unloading |
 | `MillUnloadDone` | 45s after unloading begins | Pallet returned, mill becomes Idle |

@@ -3,17 +3,22 @@
 ## v0.1 — Current (MVP)
 
 - Core simulation engine (event-driven, min-heap scheduler)
-- 25 CNC mills as finite state machines (Idle, Loading, Machining, Unloading, ToolChange, Faulted)
-- 6 AGVs on a shared-lane network (20-segment bidirectional loop + 25 mill spurs)
+- 25 CNC mills as finite state machines (Idle, WaitingPallet, WaitingTool, Loading, Machining, Unloading, ToolChange, Faulted, ChipFull)
+- Heterogeneous vehicle fleet: 6 AGVs (spur-capable) + 2 AMRs (main-loop only, faster, more reliable) on a shared-lane network (20-segment bidirectional loop + 25 mill spurs)
 - Tool crib with 8 tool-set types × 4 copies each — finite inventory the scheduler must manage
 - Pallet magazine with 4 fixture types × 8 pallets each
+- Robotic work prep station — single-server billet loading queue at segment 15, two-leg mission dispatch (vehicle → work prep → AGV → mill spur)
 - Priority job queue with Poisson arrivals and multi-operation work orders
+- WIP admission control — configurable back-pressure limit (`--max-wip`) holds dispatch when active mills reach threshold
+- Chip evacuation system — chip bins accumulate during machining, ChipFull mills block until an AGV evacuates the bin (competing resource flow with production dispatch)
 - Look-ahead staging (examines next N jobs to pre-position tools/pallets)
 - Deadlock detection via wait-for graph with victim retreat resolution
-- Stochastic fault injection (exponential MTBF for mills and AGVs, configurable)
+- Idle-vehicle yielding — blocked vehicles trigger relocation of idle vehicles occupying needed segments
+- Stochastic fault injection (exponential MTBF for mills, AGVs, AMRs, and work prep station, configurable)
+- Periodic state reconciliation — compares cached scheduler belief against ground truth every 30s, logs drift events
 - Electron dashboard with real-time SVG factory floor visualization
 - IPC protocol (JSON-lines over stdio) between sim and dashboard
-- Metrics: utilization, throughput, queue depth, fault counts
+- Metrics: utilization, throughput, queue depth, fault counts, chip evacuations, WIP, back-pressure, reconciliation drifts
 - Event log with simulated-time timestamped display of simulation events
 
 ## v0.2 — Scheduling & Quality

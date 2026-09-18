@@ -88,10 +88,13 @@ When launched with `--ipc`, the sim communicates over stdio using JSON-lines (on
 
 **Incoming (dashboard -> sim on stdin):**
 
-- `{"cmd":"set_speed", "factor": N}` -- adjust simulation speed
-- `{"cmd":"pause"}` / `{"cmd":"resume"}` -- pause/resume simulation
-- `{"cmd":"inject_fault", "target": ...}` -- manually trigger a fault
-- `{"cmd":"reset", ...}` -- reset simulation with new parameters
+- `{"type":"start"}` -- begin event processing
+- `{"type":"pause"}` / `{"type":"resume"}` -- pause/resume simulation
+- `{"type":"stop"}` -- emit summary and terminate
+- `{"type":"speed", "multiplier": N}` -- adjust simulation speed (events per batch)
+- `{"type":"inject_fault", "target": {"Mill": 5}}` -- manually trigger a fault
+- `{"type":"set_param", "param": "mill_mtbf", "value": 14400}` -- change a parameter at runtime
+- `{"type":"step", "count": 100}` -- advance N events then pause
 
 Diagnostic messages go to stderr with severity prefixes, separate from protocol traffic.
 
