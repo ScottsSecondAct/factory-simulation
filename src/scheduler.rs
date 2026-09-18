@@ -12,6 +12,7 @@ use std::collections::{HashSet, VecDeque};
 use crate::agv::{Agv, LaneNetwork, WaitForGraph};
 use crate::engine::{Event, TimedEvent};
 use crate::factory::{Mill, PalletMagazine, PrepItem, ToolCrib, WorkPrepStation};
+use crate::strategy::{make_strategy, SchedulingContext, SchedulingStrategy};
 use crate::types::*;
 
 const LOOK_AHEAD_DEPTH: usize = 8;
@@ -30,6 +31,8 @@ pub struct Scheduler {
     was_back_pressured: bool,
     pending_chip_evacs: HashSet<MillId>,
     pub pending_prep_deliveries: VecDeque<PrepItem>,
+    strategy: Box<dyn SchedulingStrategy>,
+    pub strategy_name: StrategyName,
 }
 
 impl Default for Scheduler {
@@ -47,6 +50,8 @@ impl Default for Scheduler {
             was_back_pressured: false,
             pending_chip_evacs: HashSet::new(),
             pending_prep_deliveries: VecDeque::new(),
+            strategy: make_strategy(StrategyName::Fifo),
+            strategy_name: StrategyName::Fifo,
         }
     }
 }
@@ -54,6 +59,19 @@ impl Default for Scheduler {
 impl Scheduler {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn with_strategy(strategy_name: StrategyName) -> Self {
+        Self {
+            strategy: make_strategy(strategy_name),
+            strategy_name,
+            ..Self::default()
+        }
+    }
+
+    pub fn set_strategy(&mut self, name: StrategyName) {
+        self.strategy_name = name;
+        self.strategy = make_strategy(name);
     }
 
     pub fn next_id(&mut self) -> JobId {
@@ -201,7 +219,16 @@ impl Scheduler {
         let mut assigned = Vec::new();
         let mut wip = Self::wip_count(mills);
 
-        for (qi, job) in self.job_queue.iter().enumerate() {
+        let ctx = SchedulingContext {
+            now,
+            wip,
+            max_wip: self.max_wip,
+        };
+
+        // Build a candidate slice (excluding already-assigned indices).
+        let mut candidates: Vec<usize> = (0..self.job_queue.len()).collect();
+
+        loop {
             if wip >= self.max_wip {
                 self.back_pressure_events += 1;
                 if !self.was_back_pressured {
@@ -213,15 +240,30 @@ impl Scheduler {
                 }
                 break;
             }
-            if job.operations.is_empty() {
-                continue;
-            }
-            let op = &job.operations[0];
 
             // Don't flood the work prep station.
             if work_prep.total_items() + self.pending_prep_deliveries.len() >= WORK_PREP_MAX_QUEUE {
                 break;
             }
+
+            // Build the filtered queue for the strategy to inspect.
+            let filtered_jobs: Vec<&Job> = candidates
+                .iter()
+                .map(|&i| &self.job_queue[i])
+                .collect();
+            let job_slice: Vec<Job> = filtered_jobs.iter().map(|j| (*j).clone()).collect();
+
+            let Some(pick) = self.strategy.select(&job_slice, &ctx) else {
+                break;
+            };
+            let qi = candidates[pick];
+            let job = &self.job_queue[qi];
+
+            if job.operations.is_empty() {
+                candidates.remove(pick);
+                continue;
+            }
+            let op = &job.operations[0];
 
             // Find an idle mill that already has the right tool (prefer),
             // or any idle mill.
@@ -242,16 +284,20 @@ impl Scheduler {
             // Check resource availability.
             let need_tool = mills[mid].needs_tool_change(op.tool_set);
             if need_tool && tool_crib.available(op.tool_set) == 0 {
-                continue; // tool not available, try next job
+                candidates.remove(pick);
+                continue;
             }
             if pallet_mag.available(op.pallet_type) == 0 {
-                continue; // pallet not available
+                candidates.remove(pick);
+                continue;
             }
 
             // First leg goes to WORK_PREP_SEG (on loop), any vehicle works.
             let agv_opt = agvs.iter().find(|a| a.is_idle());
             let Some(agv) = agv_opt else { break };
             let agv_id = agv.id;
+
+            let job_id = job.id;
 
             // Reserve resources.
             if need_tool {
@@ -274,7 +320,7 @@ impl Scheduler {
             // Dispatch vehicle to carry raw pallet to work prep station.
             if let Some(path) = lanes.route(agvs[agv_id].segment, WORK_PREP_SEG) {
                 agvs[agv_id].cargo = Cargo::PrepPallet {
-                    job_id: job.id,
+                    job_id,
                     op_index: 0,
                     mill_id: mid,
                 };
@@ -302,6 +348,7 @@ impl Scheduler {
             self.jobs_dispatched += 1;
             wip += 1;
             assigned.push(qi);
+            candidates.remove(pick);
         }
 
         if wip < self.max_wip && self.was_back_pressured {
@@ -313,6 +360,7 @@ impl Scheduler {
         }
 
         // Remove assigned jobs (iterate in reverse to keep indices valid).
+        assigned.sort_unstable();
         for &qi in assigned.iter().rev() {
             self.job_queue.remove(qi);
         }

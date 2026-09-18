@@ -8,6 +8,7 @@ import type {
   SummaryMessage,
   MillId,
   SimTime,
+  StrategyName,
 } from "./types";
 
 type Status = "disconnected" | "ready" | "running" | "paused" | "finished" | "error";
@@ -45,6 +46,7 @@ interface SimState {
   trendMetric: TrendMetric;
   speedMultiplier: number;
   theme: Theme;
+  abActive: boolean;
 
   setStatus: (s: Status) => void;
   setError: (msg: string) => void;
@@ -57,6 +59,9 @@ interface SimState {
   setTrendMetric: (m: TrendMetric) => void;
   setSpeed: (s: number) => void;
   toggleTheme: () => void;
+  setStrategy: (s: StrategyName) => void;
+  startAb: (s: StrategyName) => void;
+  stopAb: () => void;
   reset: () => void;
 }
 
@@ -85,6 +90,7 @@ export const useStore = create<SimState>((set) => ({
   trendMetric: "throughput",
   speedMultiplier: 1,
   theme: getInitialTheme(),
+  abActive: false,
 
   setStatus: (s) => set({ status: s }),
   setError: (msg) => set({ status: "error", errorMsg: msg }),
@@ -159,6 +165,17 @@ export const useStore = create<SimState>((set) => ({
       try { localStorage.setItem("factory-sim-theme", next); } catch { /* noop */ }
       return { theme: next };
     }),
+  setStrategy: (s) => {
+    window.simBridge.command({ type: "set_strategy", strategy: s });
+  },
+  startAb: (s) => {
+    window.simBridge.command({ type: "start_ab", strategy: s });
+    set({ abActive: true });
+  },
+  stopAb: () => {
+    window.simBridge.command({ type: "stop_ab" });
+    set({ abActive: false });
+  },
   reset: () =>
     set({
       status: "disconnected",

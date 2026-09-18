@@ -6,5 +6,6 @@ pub mod ipc;
 pub mod metrics;
 pub mod reconcile;
 pub mod scheduler;
+pub mod strategy;
 pub mod types;
 pub mod world;

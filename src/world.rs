@@ -16,6 +16,8 @@ use crate::reconcile::{Drift, Reconciler};
 use crate::scheduler::Scheduler;
 use crate::types::*;
 
+pub use crate::strategy;
+
 // ── Configuration ──────────────────────────────────────────────────
 
 pub struct WorldConfig {
@@ -28,6 +30,7 @@ pub struct WorldConfig {
     pub pallet_copies: usize,
     pub snapshot_interval: SimTime,
     pub max_wip: usize,
+    pub strategy: StrategyName,
 }
 
 // ── Notifications ──────────────────────────────────────────────────
@@ -79,7 +82,7 @@ impl World {
             lanes.claim(agv.segment, agv.id);
         }
 
-        let mut scheduler = Scheduler::new();
+        let mut scheduler = Scheduler::with_strategy(config.strategy);
         scheduler.max_wip = config.max_wip;
 
         Self {
@@ -446,18 +449,27 @@ impl World {
             _ => Priority::Low,
         };
         let num_ops = self.rng.gen_range(1..=3);
-        let ops = (0..num_ops)
+        let ops: Vec<Operation> = (0..num_ops)
             .map(|_| Operation {
                 tool_set: self.rng.gen_range(0..self.tool_types),
                 duration: 180.0 + self.rng.gen::<f64>() * 720.0,
                 pallet_type: self.rng.gen_range(0..self.pallet_types),
             })
             .collect();
+        let total_processing: SimTime = ops.iter().map(|op| op.duration).sum();
+        // 70% of jobs get a due date: arrival + (2..5)× processing time.
+        let due_date = if self.rng.gen::<f64>() < 0.7 {
+            let slack_factor = 2.0 + self.rng.gen::<f64>() * 3.0;
+            Some(arrival + total_processing * slack_factor)
+        } else {
+            None
+        };
         Job {
             id,
             priority,
             operations: ops,
             arrived_at: arrival,
+            due_date,
         }
     }
 

@@ -29,6 +29,8 @@ export type WorkPrepState = "Idle" | "Processing" | "Faulted";
 
 export type Priority = "Critical" | "High" | "Normal" | "Low";
 
+export type StrategyName = "Fifo" | "ShortestProcessingTime" | "EarliestDueDate" | "WeightedPriority";
+
 export type VehicleType = "Agv" | "Amr";
 
 export interface ReadyConfig {
@@ -46,6 +48,8 @@ export interface ReadyConfig {
   loop_segments: number;
   total_segments: number;
   max_wip: number;
+  strategy: StrategyName;
+  available_strategies: StrategyName[];
 }
 
 export interface MillLayout {
@@ -108,6 +112,16 @@ export interface JobQueueSnap {
   next_8: JobPreview[];
 }
 
+export interface AbMetricsSnap {
+  strategy: StrategyName;
+  throughput: number;
+  throughput_rate: number;
+  avg_utilization: number;
+  deadlocks: number;
+  wip: number;
+  back_pressure_events: number;
+}
+
 export interface MetricsSnap {
   throughput: number;
   throughput_rate: number;
@@ -125,6 +139,8 @@ export interface MetricsSnap {
   reconciliation_passes: number;
   reconciliation_drifts: number;
   max_drifts_in_pass: number;
+  strategy: StrategyName;
+  ab_metrics?: AbMetricsSnap;
 }
 
 export interface Snapshot {

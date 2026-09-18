@@ -57,6 +57,8 @@ pub struct ReadyConfig {
     pub loop_segments: usize,
     pub total_segments: usize,
     pub max_wip: usize,
+    pub strategy: StrategyName,
+    pub available_strategies: Vec<StrategyName>,
 }
 
 #[derive(Serialize)]
@@ -166,6 +168,20 @@ pub struct MetricsSnap {
     pub reconciliation_passes: u64,
     pub reconciliation_drifts: u64,
     pub max_drifts_in_pass: u64,
+    pub strategy: StrategyName,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ab_metrics: Option<Box<AbMetricsSnap>>,
+}
+
+#[derive(Serialize)]
+pub struct AbMetricsSnap {
+    pub strategy: StrategyName,
+    pub throughput: u64,
+    pub throughput_rate: f64,
+    pub avg_utilization: f64,
+    pub deadlocks: u64,
+    pub wip: usize,
+    pub back_pressure_events: u64,
 }
 
 #[derive(Serialize)]
@@ -211,6 +227,12 @@ pub enum InCommand {
     SetParam { param: String, value: f64 },
     #[serde(rename = "step")]
     Step { count: usize },
+    #[serde(rename = "set_strategy")]
+    SetStrategy { strategy: StrategyName },
+    #[serde(rename = "start_ab")]
+    StartAb { strategy: StrategyName },
+    #[serde(rename = "stop_ab")]
+    StopAb,
 }
 
 // ── IPC configuration ──────────────────────────────────────────────
@@ -226,6 +248,7 @@ pub struct IpcConfig {
     pub pallet_copies: usize,
     pub max_wip: usize,
     pub num_amrs: usize,
+    pub strategy: StrategyName,
 }
 
 // ── IPC runner ─────────────────────────────────────────────────────
@@ -240,6 +263,13 @@ pub struct IpcRunner {
     finished: bool,
     cmd_rx: mpsc::Receiver<InCommand>,
     throughput_history: Vec<(SimTime, u64)>,
+    ab: Option<AbState>,
+}
+
+struct AbState {
+    world: World,
+    engine: SimEngine,
+    strategy_name: StrategyName,
 }
 
 impl IpcRunner {
@@ -254,6 +284,7 @@ impl IpcRunner {
             pallet_copies: config.pallet_copies,
             snapshot_interval: config.snapshot_interval,
             max_wip: config.max_wip,
+            strategy: config.strategy,
         };
         let world = World::new(world_cfg);
         let engine = SimEngine::new();
@@ -290,6 +321,7 @@ impl IpcRunner {
             finished: false,
             cmd_rx,
             throughput_history: Vec::new(),
+            ab: None,
         }
     }
 
@@ -354,6 +386,47 @@ impl IpcRunner {
                 }
                 self.paused = true;
             }
+            InCommand::SetStrategy { strategy } => {
+                self.world.scheduler.set_strategy(strategy);
+                eprintln!("[INFO] Strategy changed to {strategy}");
+            }
+            InCommand::StartAb { strategy } => {
+                let ab_cfg = WorldConfig {
+                    fault_cfg: self.config.fault_cfg.clone(),
+                    num_amrs: self.config.num_amrs,
+                    seed: self.config.seed,
+                    tool_types: self.config.tool_types,
+                    tool_copies: self.config.tool_copies,
+                    pallet_types: self.config.pallet_types,
+                    pallet_copies: self.config.pallet_copies,
+                    snapshot_interval: self.config.snapshot_interval,
+                    max_wip: self.config.max_wip,
+                    strategy,
+                };
+                let mut ab_world = World::new(ab_cfg);
+                let mut ab_engine = SimEngine::new();
+                ab_engine.schedule_many(ab_world.seed_events());
+                // Catch up to current time.
+                let now = self.engine.now();
+                while ab_engine.peek_time().is_some_and(|t| t <= now) {
+                    let Some(te) = ab_engine.step() else { break };
+                    if te.time > self.config.duration {
+                        break;
+                    }
+                    let (events, _) = ab_world.handle(&te);
+                    ab_engine.schedule_many(events);
+                }
+                self.ab = Some(AbState {
+                    world: ab_world,
+                    engine: ab_engine,
+                    strategy_name: strategy,
+                });
+                eprintln!("[INFO] A/B comparison started: {} vs {strategy}", self.world.scheduler.strategy_name);
+            }
+            InCommand::StopAb => {
+                self.ab = None;
+                eprintln!("[INFO] A/B comparison stopped");
+            }
         }
     }
 
@@ -383,6 +456,19 @@ impl IpcRunner {
         let (new_events, notes) = self.world.handle(&te);
         self.engine.schedule_many(new_events);
         self.handle_notifications(now, notes);
+
+        // Advance A/B world to the same time.
+        if let Some(ref mut ab) = self.ab {
+            while ab.engine.peek_time().is_some_and(|t| t <= now) {
+                let Some(ab_te) = ab.engine.step() else { break };
+                if ab_te.time > self.config.duration {
+                    break;
+                }
+                let (ab_events, _) = ab.world.handle(&ab_te);
+                ab.engine.schedule_many(ab_events);
+            }
+        }
+
         self.maybe_emit_snapshot(now);
         true
     }
@@ -454,6 +540,13 @@ impl IpcRunner {
                 loop_segments: LOOP_SEGMENTS,
                 total_segments: TOTAL_SEGMENTS,
                 max_wip: self.world.scheduler.max_wip,
+                strategy: self.config.strategy,
+                available_strategies: vec![
+                    StrategyName::Fifo,
+                    StrategyName::ShortestProcessingTime,
+                    StrategyName::EarliestDueDate,
+                    StrategyName::WeightedPriority,
+                ],
             },
             layout: LayoutInfo {
                 mills: mill_layouts,
@@ -574,6 +667,22 @@ impl IpcRunner {
                 reconciliation_passes: w.reconciler.passes,
                 reconciliation_drifts: w.reconciler.total_drifts,
                 max_drifts_in_pass: w.reconciler.max_drifts_in_pass,
+                strategy: w.scheduler.strategy_name,
+                ab_metrics: self.ab.as_ref().map(|ab| {
+                    let ab_parts: u64 = ab.world.mills.iter().map(|m| m.parts_completed).sum();
+                    let ab_rate = if now > 0.0 { ab_parts as f64 / (now / 3600.0) } else { 0.0 };
+                    let ab_busy: SimTime = ab.world.mills.iter().map(|m| m.busy_time).sum();
+                    let ab_util = if now > 0.0 { ab_busy / (now * NUM_MILLS as f64) } else { 0.0 };
+                    Box::new(AbMetricsSnap {
+                        strategy: ab.strategy_name,
+                        throughput: ab_parts,
+                        throughput_rate: ab_rate,
+                        avg_utilization: ab_util,
+                        deadlocks: ab.world.scheduler.deadlocks_detected,
+                        wip: Scheduler::wip_count(&ab.world.mills),
+                        back_pressure_events: ab.world.scheduler.back_pressure_events,
+                    })
+                }),
             },
         };
 

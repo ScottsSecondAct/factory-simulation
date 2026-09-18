@@ -4,6 +4,7 @@ import type { SimMessage } from "./types";
 import { ControlBar } from "./components/ControlBar";
 import { FactoryFloor } from "./components/FactoryFloor";
 import { MetricsPanel } from "./components/MetricsPanel";
+import { AbComparisonPanel } from "./components/AbComparisonPanel";
 import { ResourcePanel } from "./components/ResourcePanel";
 import { JobQueuePanel } from "./components/JobQueuePanel";
 import { TrendChart } from "./components/TrendChart";
@@ -120,6 +121,7 @@ export default function App() {
         <aside style={styles.sidebar}>
           <div style={styles.sidebarScroll}>
             <MetricsPanel />
+            <AbComparisonPanel />
             <ResourcePanel />
             <JobQueuePanel />
           </div>

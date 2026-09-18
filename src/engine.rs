@@ -146,6 +146,11 @@ impl SimEngine {
         }
     }
 
+    /// Peek at the next event's time without popping it.
+    pub fn peek_time(&self) -> Option<SimTime> {
+        self.queue.peek().map(|te| te.time)
+    }
+
     /// Pop the next event, advance the clock, and return it.
     /// Returns `None` when the queue is empty.
     pub fn step(&mut self) -> Option<TimedEvent> {

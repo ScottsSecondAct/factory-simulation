@@ -1,5 +1,6 @@
 use factory_sim::engine::SimEngine;
 use factory_sim::fault::FaultConfig;
+use factory_sim::types::StrategyName;
 use factory_sim::world::{World, WorldConfig};
 
 fn default_config() -> WorldConfig {
@@ -13,6 +14,7 @@ fn default_config() -> WorldConfig {
         pallet_copies: 8,
         snapshot_interval: 60.0,
         max_wip: 20,
+        strategy: StrategyName::Fifo,
     }
 }
 
@@ -115,4 +117,93 @@ fn jobs_dispatched_exceeds_completed() {
     assert!(world.scheduler.jobs_dispatched > 0);
     let completed: u64 = world.mills.iter().map(|m| m.parts_completed).sum();
     assert!(world.scheduler.jobs_dispatched >= completed);
+}
+
+#[test]
+fn all_strategies_complete_without_panic() {
+    let strategies = [
+        StrategyName::Fifo,
+        StrategyName::ShortestProcessingTime,
+        StrategyName::EarliestDueDate,
+        StrategyName::WeightedPriority,
+    ];
+
+    for strategy in strategies {
+        let cfg = WorldConfig { strategy, ..default_config() };
+        let mut world = World::new(cfg);
+        let mut engine = SimEngine::new();
+        engine.schedule_many(world.seed_events());
+
+        let duration = 3600.0;
+        while let Some(te) = engine.step() {
+            if te.time > duration {
+                break;
+            }
+            let (new_events, _) = world.handle(&te);
+            engine.schedule_many(new_events);
+        }
+
+        let completed: u64 = world.mills.iter().map(|m| m.parts_completed).sum();
+        assert!(completed > 0, "{strategy} produced zero completions");
+        assert!(
+            world.scheduler.jobs_dispatched >= completed,
+            "{strategy} dispatched fewer than completed"
+        );
+    }
+}
+
+#[test]
+fn strategy_set_at_runtime_takes_effect() {
+    let cfg = WorldConfig {
+        strategy: StrategyName::Fifo,
+        ..default_config()
+    };
+    let mut world = World::new(cfg);
+    assert_eq!(world.scheduler.strategy_name, StrategyName::Fifo);
+    world.scheduler.set_strategy(StrategyName::ShortestProcessingTime);
+    assert_eq!(
+        world.scheduler.strategy_name,
+        StrategyName::ShortestProcessingTime
+    );
+}
+
+#[test]
+fn ab_comparison_both_produce_output() {
+    let run = |strategy: StrategyName| -> (u64, u64, u64) {
+        let cfg = WorldConfig {
+            strategy,
+            fault_cfg: FaultConfig { enabled: false, ..FaultConfig::default() },
+            ..default_config()
+        };
+        let mut world = World::new(cfg);
+        let mut engine = SimEngine::new();
+        engine.schedule_many(world.seed_events());
+
+        let duration = 7200.0;
+        while let Some(te) = engine.step() {
+            if te.time > duration {
+                break;
+            }
+            let (new_events, _) = world.handle(&te);
+            engine.schedule_many(new_events);
+        }
+
+        let completed: u64 = world.mills.iter().map(|m| m.parts_completed).sum();
+        (world.scheduler.jobs_dispatched, completed, engine.events_processed())
+    };
+
+    let (fifo_disp, fifo_comp, _fifo_events) = run(StrategyName::Fifo);
+    let (spt_disp, spt_comp, _spt_events) = run(StrategyName::ShortestProcessingTime);
+    let (edd_disp, edd_comp, _edd_events) = run(StrategyName::EarliestDueDate);
+    let (wp_disp, wp_comp, _wp_events) = run(StrategyName::WeightedPriority);
+
+    for (name, disp, comp) in [
+        ("FIFO", fifo_disp, fifo_comp),
+        ("SPT", spt_disp, spt_comp),
+        ("EDD", edd_disp, edd_comp),
+        ("Weighted", wp_disp, wp_comp),
+    ] {
+        assert!(disp > 0, "{name} dispatched zero jobs");
+        assert!(comp > 0, "{name} completed zero jobs");
+    }
 }

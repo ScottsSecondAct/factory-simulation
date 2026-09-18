@@ -1,9 +1,17 @@
 import { useStore } from "../store";
+import type { StrategyName } from "../types";
 
 const SPEEDS = [1, 4, 16, 64, 256];
 
+const STRATEGY_LABELS: Record<StrategyName, string> = {
+  Fifo: "FIFO",
+  ShortestProcessingTime: "SPT",
+  EarliestDueDate: "EDD",
+  WeightedPriority: "Weighted",
+};
+
 export function ControlBar() {
-  const { status, config, snapshot, speedMultiplier, setSpeed, theme, toggleTheme } = useStore();
+  const { status, config, snapshot, speedMultiplier, setSpeed, theme, toggleTheme, abActive, setStrategy, startAb, stopAb } = useStore();
 
   const handleStart = async () => {
     const { setStatus, reset } = useStore.getState();
@@ -54,6 +62,27 @@ export function ControlBar() {
   const isPaused = status === "paused";
   const canControl = isRunning || isPaused;
 
+  const strategies = config?.available_strategies ?? [];
+  const currentStrategy = snapshot?.metrics.strategy ?? config?.strategy ?? "Fifo";
+
+  const handleStrategyChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    setStrategy(e.target.value as StrategyName);
+  };
+
+  const handleAbToggle = () => {
+    if (abActive) {
+      stopAb();
+    } else {
+      const other = strategies.find((s) => s !== currentStrategy) ?? "ShortestProcessingTime";
+      startAb(other as StrategyName);
+    }
+  };
+
+  const handleAbStrategyChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    stopAb();
+    startAb(e.target.value as StrategyName);
+  };
+
   return (
     <header style={styles.bar}>
       <div style={styles.left}>
@@ -89,8 +118,48 @@ export function ControlBar() {
         )}
       </div>
 
-      <div style={styles.clock} className="tabular-nums">
-        {snapshot ? formatClock(snapshot.time) : "00:00:00"}
+      <div style={styles.center}>
+        <div style={styles.clock} className="tabular-nums">
+          {snapshot ? formatClock(snapshot.time) : "00:00:00"}
+        </div>
+        {canControl && strategies.length > 0 && (
+          <div style={styles.strategyGroup}>
+            <select
+              style={styles.select}
+              value={currentStrategy}
+              onChange={handleStrategyChange}
+              title="Scheduling strategy"
+            >
+              {strategies.map((s) => (
+                <option key={s} value={s}>{STRATEGY_LABELS[s] ?? s}</option>
+              ))}
+            </select>
+            <button
+              style={{
+                ...styles.btnSmall,
+                ...(abActive ? { borderColor: "var(--accent)", color: "var(--accent)" } : {}),
+              }}
+              onClick={handleAbToggle}
+              title={abActive ? "Stop A/B comparison" : "Start A/B comparison"}
+            >
+              A/B
+            </button>
+            {abActive && (
+              <select
+                style={styles.select}
+                value={snapshot?.metrics.ab_metrics?.strategy ?? "ShortestProcessingTime"}
+                onChange={handleAbStrategyChange}
+                title="B strategy"
+              >
+                {strategies
+                  .filter((s) => s !== currentStrategy)
+                  .map((s) => (
+                    <option key={s} value={s}>{STRATEGY_LABELS[s] ?? s}</option>
+                  ))}
+              </select>
+            )}
+          </div>
+        )}
       </div>
 
       <div style={styles.right}>
@@ -138,12 +207,18 @@ const styles: Record<string, React.CSSProperties> = {
     flexShrink: 0,
   },
   left: { display: "flex", gap: 6, alignItems: "center" },
+  center: { display: "flex", gap: 10, alignItems: "center" },
   right: { display: "flex", gap: 8, alignItems: "center" },
   clock: {
     fontSize: 20,
     fontWeight: 700,
     fontFamily: "'SF Mono', 'Cascadia Code', Consolas, monospace",
     letterSpacing: "0.02em",
+  },
+  strategyGroup: {
+    display: "flex",
+    gap: 4,
+    alignItems: "center",
   },
   btn: {
     background: "none",
@@ -162,6 +237,15 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 4,
     cursor: "pointer",
     fontSize: 12,
+  },
+  select: {
+    background: "var(--bg-card)",
+    border: "1px solid var(--border)",
+    color: "var(--text)",
+    padding: "3px 8px",
+    borderRadius: 4,
+    fontSize: 12,
+    cursor: "pointer",
   },
   configLabel: {
     fontSize: 12,

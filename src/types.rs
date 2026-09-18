@@ -115,6 +115,33 @@ pub enum Priority {
     Low = 3,
 }
 
+// ── Scheduling strategy names ──────────────────────────────────────
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StrategyName {
+    #[default]
+    Fifo,
+    ShortestProcessingTime,
+    EarliestDueDate,
+    WeightedPriority,
+}
+
+impl std::fmt::Display for StrategyName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Fifo => write!(f, "FIFO"),
+            Self::ShortestProcessingTime => write!(f, "SPT"),
+            Self::EarliestDueDate => write!(f, "EDD"),
+            Self::WeightedPriority => write!(f, "Weighted"),
+        }
+    }
+}
+
+// ── Weighted-priority scoring weights ──────────────────────────────
+pub const WEIGHT_PRIORITY: f64 = 10.0;
+pub const WEIGHT_WAIT_TIME: f64 = 0.01;
+pub const WEIGHT_PROCESSING_TIME: f64 = -0.005;
+pub const WEIGHT_DUE_DATE: f64 = 0.02;
+
 // ── Machining operation (one step within a job) ─────────────────────
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Operation {
@@ -130,6 +157,7 @@ pub struct Job {
     pub priority: Priority,
     pub operations: Vec<Operation>,
     pub arrived_at: SimTime,
+    pub due_date: Option<SimTime>,
 }
 
 // ── Fault targets ───────────────────────────────────────────────────
