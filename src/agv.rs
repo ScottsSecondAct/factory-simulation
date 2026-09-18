@@ -6,7 +6,7 @@
 //! [`WaitForGraph`] used by the scheduler's deadlock detector.
 
 use serde::Serialize;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 
 use crate::types::*;
 
@@ -96,6 +96,9 @@ impl Agv {
 
     pub fn repair(&mut self) {
         self.state = AgvState::Idle;
+        self.cargo = Cargo::Empty;
+        self.path.clear();
+        self.path_cursor = 0;
     }
 }
 
@@ -259,7 +262,7 @@ impl LaneNetwork {
 #[derive(Debug, Default)]
 pub struct WaitForGraph {
     /// agv_a → agv_b means "a is waiting for b to release a segment."
-    edges: HashMap<AgvId, AgvId>,
+    edges: BTreeMap<AgvId, AgvId>,
 }
 
 impl WaitForGraph {

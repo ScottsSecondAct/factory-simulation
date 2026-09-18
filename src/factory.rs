@@ -108,11 +108,17 @@ impl Mill {
         self.fault_start = Some(now);
     }
 
-    pub fn repair(&mut self, now: SimTime) {
+    pub fn repair(&mut self, now: SimTime) -> Option<(u8, PalletId)> {
         if let Some(start) = self.fault_start.take() {
             self.fault_time += now - start;
         }
         self.state = MillState::Idle;
+        self.current_job = None;
+        self.current_op = 0;
+        match (self.loaded_pallet_type.take(), self.loaded_pallet.take()) {
+            (Some(pt), Some(pid)) => Some((pt, pid)),
+            _ => None,
+        }
     }
 }
 

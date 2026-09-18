@@ -45,7 +45,7 @@ struct World {
 }
 
 impl World {
-    fn new(fault_cfg: FaultConfig, num_amrs: usize) -> Self {
+    fn new(fault_cfg: FaultConfig, num_amrs: usize, seed: u64) -> Self {
         let mills: Vec<Mill> = (0..NUM_MILLS).map(Mill::new).collect();
 
         let mut agvs: Vec<Agv> = (0..NUM_AGVS)
@@ -75,7 +75,7 @@ impl World {
             work_prep: WorkPrepStation::new(),
             reconciler: Reconciler::new(),
             metrics: Metrics::new(60.0),
-            rng: StdRng::seed_from_u64(42),
+            rng: StdRng::seed_from_u64(seed),
         }
     }
 
@@ -100,42 +100,58 @@ impl World {
                 }
             }
             Event::MillLoadDone(mid) => {
-                let m = &mut self.mills[*mid];
-                if let (Some(jid), op_idx) = (m.current_job, m.current_op) {
-                    m.begin_machining(jid, op_idx);
-                    let duration = 300.0 + self.rng.gen::<f64>() * 600.0;
-                    out.push(TimedEvent {
-                        time: now + duration,
-                        event: Event::MillMachiningDone {
-                            mill_id: *mid,
-                            job_id: jid,
-                            op_index: op_idx,
-                            duration,
-                        },
-                    });
+                if self.mills[*mid].state != MillState::Loading {
+                    // Stale — mill faulted or state changed since this was scheduled
+                } else {
+                    let m = &mut self.mills[*mid];
+                    if let (Some(jid), op_idx) = (m.current_job, m.current_op) {
+                        m.begin_machining(jid, op_idx);
+                        let duration = 300.0 + self.rng.gen::<f64>() * 600.0;
+                        out.push(TimedEvent {
+                            time: now + duration,
+                            event: Event::MillMachiningDone {
+                                mill_id: *mid,
+                                job_id: jid,
+                                op_index: op_idx,
+                                duration,
+                            },
+                        });
+                    }
                 }
             }
             Event::MillMachiningDone {
                 mill_id, duration, ..
             } => {
-                self.mills[*mill_id].finish_machining(*duration);
-                out.push(TimedEvent {
-                    time: now + MILL_UNLOAD_TIME,
-                    event: Event::MillUnloadDone(*mill_id),
-                });
+                if self.mills[*mill_id].state != MillState::Machining {
+                    // Stale — mill faulted since machining started
+                } else {
+                    self.mills[*mill_id].finish_machining(*duration);
+                    out.push(TimedEvent {
+                        time: now + MILL_UNLOAD_TIME,
+                        event: Event::MillUnloadDone(*mill_id),
+                    });
+                }
             }
             Event::MillUnloadDone(mid) => {
-                if let Some(pid) = self.mills[*mid].loaded_pallet.take() {
-                    let pt = self.mills[*mid].loaded_pallet_type.take().unwrap_or(0);
-                    self.pallet_mag.return_pallet(pt, pid);
+                if self.mills[*mid].state != MillState::Unloading {
+                    // Stale — mill faulted during unloading
+                } else {
+                    if let Some(pid) = self.mills[*mid].loaded_pallet.take() {
+                        let pt = self.mills[*mid].loaded_pallet_type.take().unwrap_or(0);
+                        self.pallet_mag.return_pallet(pt, pid);
+                    }
+                    self.mills[*mid].finish_unloading();
                 }
-                self.mills[*mid].finish_unloading();
             }
 
             Event::AgvArrived { agv_id, segment } => {
                 let aid = *agv_id;
                 let seg = *segment;
-                if self.lanes.claim(seg, aid) {
+                if self.agvs[aid].state == AgvState::Faulted
+                    || self.agvs[aid].state == AgvState::Idle
+                {
+                    // Stale — vehicle faulted or was reset since this was scheduled
+                } else if self.lanes.claim(seg, aid) {
                     self.lanes.release(self.agvs[aid].segment);
                     self.agvs[aid].advance();
                     if self.agvs[aid].at_destination() {
@@ -165,57 +181,64 @@ impl World {
                 self.agvs[*agv_id].loads_delivered += 1;
             }
             Event::AgvUnloadDone { agv_id } => {
-                match &self.agvs[*agv_id].cargo {
-                    Cargo::Workpiece { job_id, op_index } => {
-                        let seg = self.agvs[*agv_id].segment;
-                        if seg >= SPUR_BASE {
-                            let mid = seg - SPUR_BASE;
-                            if mid < NUM_MILLS {
-                                self.mills[mid].current_job = Some(*job_id);
-                                self.mills[mid].current_op = *op_index;
+                if self.agvs[*agv_id].state == AgvState::Faulted
+                    || self.agvs[*agv_id].state == AgvState::Idle
+                {
+                    // Stale — vehicle faulted or was reset since this was scheduled
+                } else {
+                    match &self.agvs[*agv_id].cargo {
+                        Cargo::Workpiece { job_id, op_index } => {
+                            let seg = self.agvs[*agv_id].segment;
+                            if seg >= SPUR_BASE {
+                                let mid = seg - SPUR_BASE;
+                                if mid < NUM_MILLS {
+                                    self.mills[mid].current_job = Some(*job_id);
+                                    self.mills[mid].current_op = *op_index;
+                                    out.push(TimedEvent {
+                                        time: now + MILL_LOAD_TIME,
+                                        event: Event::MillLoadDone(mid),
+                                    });
+                                }
+                            }
+                        }
+                        Cargo::ChipBin(mid) => {
+                            out.push(TimedEvent {
+                                time: now + CHIP_EVAC_TIME,
+                                event: Event::ChipEvacDone(*mid),
+                            });
+                        }
+                        Cargo::PrepPallet {
+                            job_id,
+                            op_index,
+                            mill_id,
+                        } => {
+                            let item = PrepItem {
+                                job_id: *job_id,
+                                op_index: *op_index,
+                                mill_id: *mill_id,
+                            };
+                            self.work_prep.enqueue(item);
+                            if let Some((prep_item, gen)) = self.work_prep.try_start() {
+                                let prep_time = WORK_PREP_TIME_MIN
+                                    + self.rng.gen::<f64>()
+                                        * (WORK_PREP_TIME_MAX - WORK_PREP_TIME_MIN);
                                 out.push(TimedEvent {
-                                    time: now + MILL_LOAD_TIME,
-                                    event: Event::MillLoadDone(mid),
+                                    time: now + prep_time,
+                                    event: Event::WorkPrepDone {
+                                        job_id: prep_item.job_id,
+                                        op_index: prep_item.op_index,
+                                        mill_id: prep_item.mill_id,
+                                        gen,
+                                    },
                                 });
                             }
                         }
+                        _ => {}
                     }
-                    Cargo::ChipBin(mid) => {
-                        out.push(TimedEvent {
-                            time: now + CHIP_EVAC_TIME,
-                            event: Event::ChipEvacDone(*mid),
-                        });
-                    }
-                    Cargo::PrepPallet {
-                        job_id,
-                        op_index,
-                        mill_id,
-                    } => {
-                        let item = PrepItem {
-                            job_id: *job_id,
-                            op_index: *op_index,
-                            mill_id: *mill_id,
-                        };
-                        self.work_prep.enqueue(item);
-                        if let Some((prep_item, gen)) = self.work_prep.try_start() {
-                            let prep_time = WORK_PREP_TIME_MIN
-                                + self.rng.gen::<f64>() * (WORK_PREP_TIME_MAX - WORK_PREP_TIME_MIN);
-                            out.push(TimedEvent {
-                                time: now + prep_time,
-                                event: Event::WorkPrepDone {
-                                    job_id: prep_item.job_id,
-                                    op_index: prep_item.op_index,
-                                    mill_id: prep_item.mill_id,
-                                    gen,
-                                },
-                            });
-                        }
-                    }
-                    _ => {}
+                    self.agvs[*agv_id].cargo = Cargo::Empty;
+                    self.agvs[*agv_id].state = AgvState::Idle;
+                    self.agvs[*agv_id].loads_delivered += 1;
                 }
-                self.agvs[*agv_id].cargo = Cargo::Empty;
-                self.agvs[*agv_id].state = AgvState::Idle;
-                self.agvs[*agv_id].loads_delivered += 1;
             }
 
             Event::ToolIssued { .. } | Event::PalletIssued { .. } => {}
@@ -287,12 +310,44 @@ impl World {
             Event::FaultRepair(target) => {
                 match target {
                     FaultTarget::Mill(mid) => {
-                        self.mills[*mid].repair(now);
+                        if let Some((pt, pid)) = self.mills[*mid].repair(now) {
+                            self.pallet_mag.return_pallet(pt, pid);
+                        }
                         eprintln!("[{now:.1}s] REPAIR: Mill {mid} back online");
                     }
                     FaultTarget::Agv(aid) => {
-                        self.agvs[*aid].repair();
-                        let label = if self.agvs[*aid].vehicle_type == VehicleType::Amr {
+                        let aid = *aid;
+                        // Recover resources from in-flight cargo before repair
+                        let dest_mill = match &self.agvs[aid].cargo {
+                            Cargo::PrepPallet { mill_id, .. } => Some(*mill_id),
+                            Cargo::Workpiece { .. } => self.agvs[aid].path.last().and_then(|&d| {
+                                (d >= SPUR_BASE && d - SPUR_BASE < NUM_MILLS)
+                                    .then_some(d - SPUR_BASE)
+                            }),
+                            _ => None,
+                        };
+                        let chip_evac_mill = match &self.agvs[aid].cargo {
+                            Cargo::ChipBin(mid) => Some(*mid),
+                            _ => None,
+                        };
+                        if let Some(mid) = dest_mill {
+                            if self.mills[mid].state == MillState::Loading {
+                                if let (Some(pt), Some(pid)) = (
+                                    self.mills[mid].loaded_pallet_type.take(),
+                                    self.mills[mid].loaded_pallet.take(),
+                                ) {
+                                    self.pallet_mag.return_pallet(pt, pid);
+                                }
+                                self.mills[mid].current_job = None;
+                                self.mills[mid].current_op = 0;
+                                self.mills[mid].state = MillState::Idle;
+                            }
+                        }
+                        if let Some(mid) = chip_evac_mill {
+                            self.scheduler.clear_pending_chip_evac(mid);
+                        }
+                        self.agvs[aid].repair();
+                        let label = if self.agvs[aid].vehicle_type == VehicleType::Amr {
                             "AMR"
                         } else {
                             "AGV"
@@ -500,7 +555,7 @@ fn main() {
         enabled: faults_enabled,
         ..FaultConfig::default()
     };
-    let mut world = World::new(fault_cfg, num_amrs);
+    let mut world = World::new(fault_cfg, num_amrs, seed);
     world.scheduler.max_wip = max_wip;
     let mut engine = SimEngine::new();
 

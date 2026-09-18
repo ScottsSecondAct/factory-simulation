@@ -123,7 +123,7 @@ impl Scheduler {
         self.look_ahead_stage(tool_crib, pallet_mag);
 
         // ── 6. Deadlock detection ───────────────────────────────────
-        self.detect_and_resolve_deadlocks(now, agvs, lanes, &mut events);
+        self.detect_and_resolve_deadlocks(now, agvs, mills, pallet_mag, lanes, &mut events);
 
         // ── 7. Schedule next tick ───────────────────────────────────
         events.push(TimedEvent {
@@ -479,6 +479,8 @@ impl Scheduler {
         &mut self,
         now: SimTime,
         agvs: &mut [Agv],
+        mills: &mut [Mill],
+        pallet_mag: &mut PalletMagazine,
         lanes: &mut LaneNetwork,
         _events: &mut Vec<TimedEvent>,
     ) {
@@ -499,11 +501,27 @@ impl Scheduler {
         let cycle = self.wait_graph.find_cycle();
         if !cycle.is_empty() {
             self.deadlocks_detected += 1;
-            // Resolution strategy: retreat the lowest-priority AGV in
-            // the cycle to a safe segment (its current spur or nearest
-            // idle loop segment). This is a simplified version of the
-            // "victim selection" pattern used in real FMS controllers.
             if let Some(&victim_id) = cycle.last() {
+                // Recover resources from cargo before dropping it.
+                let dest_mill = match &agvs[victim_id].cargo {
+                    Cargo::PrepPallet { mill_id, .. } => Some(*mill_id),
+                    Cargo::Workpiece { .. } => agvs[victim_id].path.last().and_then(|&d| {
+                        (d >= SPUR_BASE && d - SPUR_BASE < mills.len()).then_some(d - SPUR_BASE)
+                    }),
+                    _ => None,
+                };
+                let chip_evac_mill = match &agvs[victim_id].cargo {
+                    Cargo::ChipBin(mid) => Some(*mid),
+                    _ => None,
+                };
+
+                if let Some(mid) = dest_mill {
+                    Self::release_mill_for_dropped_cargo(mills, pallet_mag, mid);
+                }
+                if let Some(mid) = chip_evac_mill {
+                    self.pending_chip_evacs.remove(&mid);
+                }
+
                 let cur = agvs[victim_id].segment;
                 agvs[victim_id].state = AgvState::Idle;
                 agvs[victim_id].path.clear();
@@ -511,13 +529,29 @@ impl Scheduler {
                 agvs[victim_id].cargo = Cargo::Empty;
                 self.wait_graph.remove(victim_id);
 
-                // Release any claimed-ahead segments.
                 lanes.release(cur);
-                // Re-claim current position.
                 lanes.claim(cur, victim_id);
 
                 eprintln!("[{now:.1}s] DEADLOCK resolved: retreated AGV {victim_id} at seg {cur}");
             }
+        }
+    }
+
+    fn release_mill_for_dropped_cargo(
+        mills: &mut [Mill],
+        pallet_mag: &mut PalletMagazine,
+        mill_id: MillId,
+    ) {
+        if mills[mill_id].state == MillState::Loading {
+            if let (Some(pt), Some(pid)) = (
+                mills[mill_id].loaded_pallet_type.take(),
+                mills[mill_id].loaded_pallet.take(),
+            ) {
+                pallet_mag.return_pallet(pt, pid);
+            }
+            mills[mill_id].current_job = None;
+            mills[mill_id].current_op = 0;
+            mills[mill_id].state = MillState::Idle;
         }
     }
 }
