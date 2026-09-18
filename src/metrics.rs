@@ -180,9 +180,4 @@ impl Metrics {
     pub fn snapshots(&self) -> &[Snapshot] {
         &self.snapshots
     }
-
-    /// Serialize all snapshots as a JSON array (for dashboard playback).
-    pub fn snapshots_json(&self) -> String {
-        serde_json::to_string_pretty(&self.snapshots).unwrap_or_default()
-    }
 }

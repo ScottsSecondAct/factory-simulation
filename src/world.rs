@@ -258,8 +258,6 @@ impl World {
                 }
             }
 
-            Event::ToolIssued { .. } | Event::PalletIssued { .. } => {}
-
             Event::ChipEvacDone(mid) => {
                 self.mills[*mid].finish_chip_evac();
                 self.scheduler.clear_pending_chip_evac(*mid);
@@ -439,7 +437,7 @@ impl World {
         events
     }
 
-    pub fn generate_job(&mut self, arrival: SimTime) -> Job {
+    fn generate_job(&mut self, arrival: SimTime) -> Job {
         let id = self.scheduler.next_id();
         let priority = match self.rng.gen_range(0..100) {
             0..=4 => Priority::Critical,

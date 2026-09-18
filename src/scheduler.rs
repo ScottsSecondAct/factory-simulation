@@ -16,20 +16,9 @@ use crate::types::*;
 
 const LOOK_AHEAD_DEPTH: usize = 8;
 
-/// A pending AGV mission: pick up something and deliver it somewhere.
-#[derive(Debug, Clone)]
-pub struct Mission {
-    pub agv_id: AgvId,
-    pub pickup_seg: SegmentId,
-    pub deliver_seg: SegmentId,
-    pub cargo: Cargo,
-    pub dest_mill: MillId,
-}
-
 /// The scheduler owns the job queue and the dispatch state.
 pub struct Scheduler {
     pub job_queue: VecDeque<Job>,
-    pub pending_missions: Vec<Mission>,
     pub wait_graph: WaitForGraph,
     pub deadlocks_detected: u64,
     pub jobs_dispatched: u64,
@@ -47,7 +36,6 @@ impl Default for Scheduler {
     fn default() -> Self {
         Self {
             job_queue: VecDeque::new(),
-            pending_missions: Vec::new(),
             wait_graph: WaitForGraph::new(),
             deadlocks_detected: 0,
             jobs_dispatched: 0,

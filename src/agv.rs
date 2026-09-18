@@ -175,41 +175,6 @@ impl LaneNetwork {
         None
     }
 
-    /// Shortest path restricted to main loop segments only (for AMRs).
-    pub fn route_loop_only(&self, src: SegmentId, dst: SegmentId) -> Option<Vec<SegmentId>> {
-        if src == dst {
-            return Some(Vec::new());
-        }
-        let mut visited = [false; TOTAL_SEGMENTS];
-        let mut parent = vec![usize::MAX; TOTAL_SEGMENTS];
-        let mut queue = VecDeque::new();
-        visited[src] = true;
-        queue.push_back(src);
-        while let Some(cur) = queue.pop_front() {
-            for &next in &self.adj[cur] {
-                if next >= LOOP_SEGMENTS {
-                    continue; // skip spur segments
-                }
-                if !visited[next] {
-                    visited[next] = true;
-                    parent[next] = cur;
-                    if next == dst {
-                        let mut path = Vec::new();
-                        let mut n = dst;
-                        while n != src {
-                            path.push(n);
-                            n = parent[n];
-                        }
-                        path.reverse();
-                        return Some(path);
-                    }
-                    queue.push_back(next);
-                }
-            }
-        }
-        None
-    }
-
     /// Try to claim a segment for an AGV. Returns false if occupied.
     pub fn claim(&mut self, seg: SegmentId, agv: AgvId) -> bool {
         if self.occupant[seg].is_some() {

@@ -39,16 +39,6 @@ pub enum Event {
         agv_id: AgvId,
     },
 
-    // Resources
-    ToolIssued {
-        tool_set: ToolSetId,
-        dest_mill: MillId,
-    },
-    PalletIssued {
-        pallet_id: PalletId,
-        dest_mill: MillId,
-    },
-
     // Chip evacuation
     ChipEvacDone(MillId),
 
@@ -163,15 +153,5 @@ impl SimEngine {
         self.clock = te.time;
         self.event_count += 1;
         Some(te)
-    }
-
-    /// Peek at the next event time without consuming it.
-    pub fn next_time(&self) -> Option<SimTime> {
-        self.queue.peek().map(|te| te.time)
-    }
-
-    /// Number of pending events.
-    pub fn pending(&self) -> usize {
-        self.queue.len()
     }
 }
