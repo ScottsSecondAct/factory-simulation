@@ -42,12 +42,19 @@ struct World {
 }
 
 impl World {
-    fn new(fault_cfg: FaultConfig) -> Self {
+    fn new(fault_cfg: FaultConfig, num_amrs: usize) -> Self {
         let mills: Vec<Mill> = (0..NUM_MILLS).map(Mill::new).collect();
 
-        let agvs: Vec<Agv> = (0..NUM_AGVS)
+        let mut agvs: Vec<Agv> = (0..NUM_AGVS)
             .map(|i| Agv::new(i, (i * 3) % LOOP_SEGMENTS))
             .collect();
+
+        // AMRs get IDs starting after the AGVs, placed on the loop.
+        for i in 0..num_amrs {
+            let id = NUM_AGVS + i;
+            let start = ((NUM_AGVS + i) * 3 + 1) % LOOP_SEGMENTS;
+            agvs.push(Agv::new_amr(id, start));
+        }
 
         let mut lanes = LaneNetwork::new();
         for agv in &agvs {
@@ -132,7 +139,7 @@ impl World {
                         });
                     } else if let Some(next) = self.agvs[aid].next_segment() {
                         out.push(TimedEvent {
-                            time: now + AGV_SEGMENT_TRAVEL,
+                            time: now + self.agvs[aid].travel_time(),
                             event: Event::AgvArrived {
                                 agv_id: aid,
                                 segment: next,
@@ -180,7 +187,12 @@ impl World {
                     }
                     FaultTarget::Agv(aid) => {
                         self.agvs[*aid].fault();
-                        eprintln!("[{now:.1}s] FAULT: AGV {aid} down");
+                        let label = if self.agvs[*aid].vehicle_type == VehicleType::Amr {
+                            "AMR"
+                        } else {
+                            "AGV"
+                        };
+                        eprintln!("[{now:.1}s] FAULT: {label} {aid} down");
                     }
                 }
                 out.push(self.fault_inj.schedule_repair(now, target));
@@ -193,7 +205,12 @@ impl World {
                     }
                     FaultTarget::Agv(aid) => {
                         self.agvs[*aid].repair();
-                        eprintln!("[{now:.1}s] REPAIR: AGV {aid} back online");
+                        let label = if self.agvs[*aid].vehicle_type == VehicleType::Amr {
+                            "AMR"
+                        } else {
+                            "AGV"
+                        };
+                        eprintln!("[{now:.1}s] REPAIR: {label} {aid} back online");
                     }
                 }
                 out.push(
@@ -259,6 +276,7 @@ fn main() {
     let mut agv_mtbf = 43_200.0;
     let mut seed: u64 = 42;
     let mut max_wip: usize = DEFAULT_MAX_WIP;
+    let mut num_amrs: usize = DEFAULT_NUM_AMRS;
 
     let mut i = 1;
     while i < args.len() {
@@ -287,6 +305,10 @@ fn main() {
                 i += 1;
                 max_wip = args[i].parse().expect("invalid max-wip");
             }
+            "--num-amrs" => {
+                i += 1;
+                num_amrs = args[i].parse().expect("invalid num-amrs");
+            }
             "--no-faults" => faults_enabled = false,
             "--json" => json_output = true,
             "--snapshots" => snapshots_output = true,
@@ -302,6 +324,7 @@ fn main() {
                        --agv-mtbf SECS          Mean time between AGV failures\n  \
                        --seed N                 RNG seed (default: 42)\n  \
                        --max-wip N              WIP limit for back-pressure (default: 20)\n  \
+                       --num-amrs N             Number of AMRs in fleet (default: 2)\n  \
                        --no-faults              Disable fault injection\n  \
                        --json                   Output summary as JSON\n  \
                        --snapshots              Output snapshots + summary as JSON\n  \
@@ -319,6 +342,7 @@ fn main() {
         let fault_cfg = FaultConfig {
             mill_mtbf,
             agv_mtbf,
+            num_amrs,
             enabled: faults_enabled,
             ..FaultConfig::default()
         };
@@ -332,6 +356,7 @@ fn main() {
             pallet_types: 4,
             pallet_copies: 8,
             max_wip,
+            num_amrs,
         };
         let mut runner = IpcRunner::new(config);
         runner.run();
@@ -342,10 +367,11 @@ fn main() {
     let fault_cfg = FaultConfig {
         mill_mtbf,
         agv_mtbf,
+        num_amrs,
         enabled: faults_enabled,
         ..FaultConfig::default()
     };
-    let mut world = World::new(fault_cfg);
+    let mut world = World::new(fault_cfg, num_amrs);
     world.scheduler.max_wip = max_wip;
     let mut engine = SimEngine::new();
 
@@ -356,8 +382,8 @@ fn main() {
     engine.schedule_many(fault_events);
 
     eprintln!(
-        "factory-sim: running {duration:.0}s simulation ({} mills, {} AGVs)",
-        NUM_MILLS, NUM_AGVS
+        "factory-sim: running {duration:.0}s simulation ({} mills, {} AGVs, {} AMRs)",
+        NUM_MILLS, NUM_AGVS, num_amrs
     );
 
     while let Some(te) = engine.step() {

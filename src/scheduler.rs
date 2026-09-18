@@ -174,8 +174,13 @@ impl Scheduler {
                 continue; // pallet not available
             }
 
-            // Find an idle AGV.
-            let agv_opt = agvs.iter().find(|a| a.is_idle());
+            // Find an idle vehicle. Spur deliveries require an AGV;
+            // AMRs are restricted to the main loop.
+            let dest_spur = mill_spur(mid);
+            let needs_spur = dest_spur >= SPUR_BASE;
+            let agv_opt = agvs
+                .iter()
+                .find(|a| a.is_idle() && (!needs_spur || a.can_enter_spur()));
             let Some(agv) = agv_opt else { break };
             let agv_id = agv.id;
 
@@ -198,8 +203,7 @@ impl Scheduler {
             mills[mid].loaded_pallet_type = Some(op.pallet_type);
             mills[mid].begin_loading();
 
-            // Dispatch AGV to carry workpiece to mill.
-            let dest_spur = mill_spur(mid);
+            // Dispatch vehicle to carry workpiece to mill.
             if let Some(path) = lanes.route(agvs[agv_id].segment, dest_spur) {
                 agvs[agv_id].state = AgvState::Traveling;
                 agvs[agv_id].cargo = Cargo::Workpiece {
@@ -212,7 +216,7 @@ impl Scheduler {
                 // Schedule first move.
                 if let Some(&seg) = agvs[agv_id].path.first() {
                     events.push(TimedEvent {
-                        time: now + AGV_SEGMENT_TRAVEL,
+                        time: now + agvs[agv_id].travel_time(),
                         event: Event::AgvArrived {
                             agv_id,
                             segment: seg,
@@ -249,6 +253,9 @@ impl Scheduler {
         lanes: &mut LaneNetwork,
         events: &mut Vec<TimedEvent>,
     ) {
+        // First pass: yield idle vehicles blocking active ones.
+        Self::yield_idle_blockers(agvs, lanes);
+
         for aid in 0..agvs.len() {
             if agvs[aid].state != AgvState::Blocked {
                 continue;
@@ -263,7 +270,7 @@ impl Scheduler {
                     // Schedule next hop.
                     if let Some(next) = agvs[aid].next_segment() {
                         events.push(TimedEvent {
-                            time: now + AGV_SEGMENT_TRAVEL,
+                            time: now + agvs[aid].travel_time(),
                             event: Event::AgvArrived {
                                 agv_id: aid,
                                 segment: next,
@@ -271,6 +278,37 @@ impl Scheduler {
                         });
                     }
                 }
+            }
+        }
+    }
+
+    /// Move idle vehicles out of the way when they block active ones.
+    fn yield_idle_blockers(agvs: &mut [Agv], lanes: &mut LaneNetwork) {
+        let mut yields: Vec<(AgvId, SegmentId)> = Vec::new();
+
+        for aid in 0..agvs.len() {
+            if agvs[aid].state != AgvState::Blocked {
+                continue;
+            }
+            let Some(wanted) = agvs[aid].next_segment() else {
+                continue;
+            };
+            let Some(blocker_id) = lanes.occupant(wanted) else {
+                continue;
+            };
+            if !agvs[blocker_id].is_idle() {
+                continue;
+            }
+            if let Some(free_seg) = lanes.nearest_free_loop(wanted, agvs[aid].segment) {
+                yields.push((blocker_id, free_seg));
+            }
+        }
+
+        for (blocker_id, free_seg) in yields {
+            let old_seg = agvs[blocker_id].segment;
+            if lanes.claim(free_seg, blocker_id) {
+                lanes.release(old_seg);
+                agvs[blocker_id].segment = free_seg;
             }
         }
     }

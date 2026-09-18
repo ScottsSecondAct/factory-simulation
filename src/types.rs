@@ -18,6 +18,7 @@ pub type SegmentId = usize;
 // ── Factory dimensions ──────────────────────────────────────────────
 pub const NUM_MILLS: usize = 25;
 pub const NUM_AGVS: usize = 6;
+pub const DEFAULT_NUM_AMRS: usize = 2;
 pub const MILL_ROWS: usize = 5;
 pub const MILLS_PER_ROW: usize = 5;
 
@@ -32,6 +33,7 @@ pub const PALLET_MAG_SEG: SegmentId = 10;
 
 // ── Timing constants (seconds) ──────────────────────────────────────
 pub const AGV_SEGMENT_TRAVEL: SimTime = 8.0;
+pub const AMR_SEGMENT_TRAVEL: SimTime = 6.0;
 pub const MILL_LOAD_TIME: SimTime = 45.0;
 pub const MILL_UNLOAD_TIME: SimTime = 45.0;
 pub const TOOL_CHANGE_TIME: SimTime = 120.0;
@@ -62,6 +64,13 @@ pub enum AgvState {
     Unloading,
     Blocked, // waiting for a lane segment
     Faulted,
+}
+
+// ── Vehicle type ────────────────────────────────────────────────────
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VehicleType {
+    Agv,
+    Amr,
 }
 
 // ── AGV cargo ───────────────────────────────────────────────────────

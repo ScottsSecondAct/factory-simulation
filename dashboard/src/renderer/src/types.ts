@@ -26,9 +26,12 @@ export type AgvState =
 
 export type Priority = "Critical" | "High" | "Normal" | "Low";
 
+export type VehicleType = "Agv" | "Amr";
+
 export interface ReadyConfig {
   num_mills: number;
   num_agvs: number;
+  num_amrs: number;
   duration: SimTime;
   snapshot_interval: SimTime;
   faults_enabled: boolean;
@@ -69,6 +72,7 @@ export interface MillSnap {
 
 export interface AgvSnap {
   id: AgvId;
+  vehicle_type: VehicleType;
   state: AgvState;
   segment: SegmentId;
   cargo: unknown;

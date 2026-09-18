@@ -24,6 +24,12 @@ pub struct FaultConfig {
     pub agv_mtbf: SimTime,
     /// AGV repair duration (seconds).
     pub agv_repair: SimTime,
+    /// Mean time between AMR failures (seconds).
+    pub amr_mtbf: SimTime,
+    /// AMR repair duration (seconds).
+    pub amr_repair: SimTime,
+    /// Number of AMRs in the fleet.
+    pub num_amrs: usize,
     /// Master enable: set false to run fault-free.
     pub enabled: bool,
 }
@@ -35,6 +41,9 @@ impl Default for FaultConfig {
             mill_repair: 1_800.0, // 30 minutes
             agv_mtbf: 43_200.0,   // ~12 hours
             agv_repair: 900.0,    // 15 minutes
+            amr_mtbf: 57_600.0,   // ~16 hours (more reliable than AGVs)
+            amr_repair: 600.0,    // 10 minutes (simpler to repair)
+            num_amrs: DEFAULT_NUM_AMRS,
             enabled: true,
         }
     }
@@ -75,7 +84,19 @@ impl FaultInjector {
                 event: Event::FaultOccur(FaultTarget::Agv(aid)),
             });
         }
+        for amid in 0..self.config.num_amrs {
+            let id = NUM_AGVS + amid;
+            let t = self.exp_sample(rng, self.config.amr_mtbf);
+            events.push(TimedEvent {
+                time: t,
+                event: Event::FaultOccur(FaultTarget::Agv(id)),
+            });
+        }
         events
+    }
+
+    fn is_amr(id: AgvId) -> bool {
+        id >= NUM_AGVS
     }
 
     /// Schedule the repair event for a fault that just occurred.
@@ -83,7 +104,13 @@ impl FaultInjector {
         self.total_faults += 1;
         let repair_time = match target {
             FaultTarget::Mill(_) => self.config.mill_repair,
-            FaultTarget::Agv(_) => self.config.agv_repair,
+            FaultTarget::Agv(id) => {
+                if Self::is_amr(*id) {
+                    self.config.amr_repair
+                } else {
+                    self.config.agv_repair
+                }
+            }
         };
         TimedEvent {
             time: now + repair_time,
@@ -100,7 +127,13 @@ impl FaultInjector {
     ) -> TimedEvent {
         let mtbf = match target {
             FaultTarget::Mill(_) => self.config.mill_mtbf,
-            FaultTarget::Agv(_) => self.config.agv_mtbf,
+            FaultTarget::Agv(id) => {
+                if Self::is_amr(*id) {
+                    self.config.amr_mtbf
+                } else {
+                    self.config.agv_mtbf
+                }
+            }
         };
         TimedEvent {
             time: now + self.exp_sample(rng, mtbf),

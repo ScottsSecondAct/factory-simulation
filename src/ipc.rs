@@ -49,6 +49,7 @@ pub enum OutMessage<'a> {
 pub struct ReadyConfig {
     pub num_mills: usize,
     pub num_agvs: usize,
+    pub num_amrs: usize,
     pub duration: SimTime,
     pub snapshot_interval: SimTime,
     pub faults_enabled: bool,
@@ -112,6 +113,7 @@ pub struct MillSnap {
 #[derive(Serialize)]
 pub struct AgvSnap<'a> {
     pub id: AgvId,
+    pub vehicle_type: &'a VehicleType,
     pub state: AgvState,
     pub segment: SegmentId,
     pub cargo: &'a Cargo,
@@ -211,6 +213,7 @@ pub struct IpcConfig {
     pub pallet_types: u8,
     pub pallet_copies: usize,
     pub max_wip: usize,
+    pub num_amrs: usize,
 }
 
 // ── IPC runner ─────────────────────────────────────────────────────
@@ -239,9 +242,14 @@ pub struct IpcRunner {
 impl IpcRunner {
     pub fn new(config: IpcConfig) -> Self {
         let mills: Vec<Mill> = (0..NUM_MILLS).map(Mill::new).collect();
-        let agvs: Vec<Agv> = (0..NUM_AGVS)
+        let mut agvs: Vec<Agv> = (0..NUM_AGVS)
             .map(|i| Agv::new(i, (i * 3) % LOOP_SEGMENTS))
             .collect();
+        for i in 0..config.num_amrs {
+            let id = NUM_AGVS + i;
+            let start = ((NUM_AGVS + i) * 3 + 1) % LOOP_SEGMENTS;
+            agvs.push(Agv::new_amr(id, start));
+        }
         let mut lanes = LaneNetwork::new();
         for agv in &agvs {
             lanes.claim(agv.segment, agv.id);
@@ -419,6 +427,7 @@ impl IpcRunner {
             config: ReadyConfig {
                 num_mills: NUM_MILLS,
                 num_agvs: NUM_AGVS,
+                num_amrs: self.config.num_amrs,
                 duration: self.config.duration,
                 snapshot_interval: self.config.snapshot_interval,
                 faults_enabled: self.fault_inj.config.enabled,
@@ -480,6 +489,7 @@ impl IpcRunner {
             .iter()
             .map(|a| AgvSnap {
                 id: a.id,
+                vehicle_type: &a.vehicle_type,
                 state: a.state.clone(),
                 segment: a.segment,
                 cargo: &a.cargo,
@@ -550,7 +560,13 @@ impl IpcRunner {
             Event::FaultOccur(target) => {
                 let repair_time = match target {
                     FaultTarget::Mill(_) => now + self.fault_inj.config.mill_repair,
-                    FaultTarget::Agv(_) => now + self.fault_inj.config.agv_repair,
+                    FaultTarget::Agv(id) => {
+                        if *id >= NUM_AGVS {
+                            now + self.fault_inj.config.amr_repair
+                        } else {
+                            now + self.fault_inj.config.agv_repair
+                        }
+                    }
                 };
                 emit_json(&OutMessage::Event {
                     time: now,
@@ -562,7 +578,10 @@ impl IpcRunner {
                 });
                 let label = match target {
                     FaultTarget::Mill(id) => format!("Mill {id}"),
-                    FaultTarget::Agv(id) => format!("AGV {id}"),
+                    FaultTarget::Agv(id) => {
+                        let vtype = if *id >= NUM_AGVS { "AMR" } else { "AGV" };
+                        format!("{vtype} {id}")
+                    }
                 };
                 eprintln!("[INFO] [{now:.1}s] FAULT: {label} down");
             }
@@ -574,7 +593,10 @@ impl IpcRunner {
                 });
                 let label = match target {
                     FaultTarget::Mill(id) => format!("Mill {id}"),
-                    FaultTarget::Agv(id) => format!("AGV {id}"),
+                    FaultTarget::Agv(id) => {
+                        let vtype = if *id >= NUM_AGVS { "AMR" } else { "AGV" };
+                        format!("{vtype} {id}")
+                    }
                 };
                 eprintln!("[INFO] [{now:.1}s] REPAIR: {label} back online");
             }
@@ -692,7 +714,7 @@ impl IpcRunner {
                         });
                     } else if let Some(next) = self.agvs[aid].next_segment() {
                         out.push(TimedEvent {
-                            time: now + AGV_SEGMENT_TRAVEL,
+                            time: now + self.agvs[aid].travel_time(),
                             event: Event::AgvArrived {
                                 agv_id: aid,
                                 segment: next,

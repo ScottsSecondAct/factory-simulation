@@ -14,6 +14,7 @@ use crate::types::*;
 #[derive(Debug, Clone, Serialize)]
 pub struct Agv {
     pub id: AgvId,
+    pub vehicle_type: VehicleType,
     pub state: AgvState,
     pub segment: SegmentId,
     pub cargo: Cargo,
@@ -28,6 +29,7 @@ impl Agv {
     pub fn new(id: AgvId, start: SegmentId) -> Self {
         Self {
             id,
+            vehicle_type: VehicleType::Agv,
             state: AgvState::Idle,
             segment: start,
             cargo: Cargo::Empty,
@@ -36,6 +38,31 @@ impl Agv {
             distance_traveled: 0,
             loads_delivered: 0,
         }
+    }
+
+    pub fn new_amr(id: AgvId, start: SegmentId) -> Self {
+        Self {
+            id,
+            vehicle_type: VehicleType::Amr,
+            state: AgvState::Idle,
+            segment: start,
+            cargo: Cargo::Empty,
+            path: Vec::new(),
+            path_cursor: 0,
+            distance_traveled: 0,
+            loads_delivered: 0,
+        }
+    }
+
+    pub fn travel_time(&self) -> SimTime {
+        match self.vehicle_type {
+            VehicleType::Agv => AGV_SEGMENT_TRAVEL,
+            VehicleType::Amr => AMR_SEGMENT_TRAVEL,
+        }
+    }
+
+    pub fn can_enter_spur(&self) -> bool {
+        self.vehicle_type == VehicleType::Agv
     }
 
     pub fn is_idle(&self) -> bool {
@@ -145,6 +172,41 @@ impl LaneNetwork {
         None
     }
 
+    /// Shortest path restricted to main loop segments only (for AMRs).
+    pub fn route_loop_only(&self, src: SegmentId, dst: SegmentId) -> Option<Vec<SegmentId>> {
+        if src == dst {
+            return Some(Vec::new());
+        }
+        let mut visited = [false; TOTAL_SEGMENTS];
+        let mut parent = vec![usize::MAX; TOTAL_SEGMENTS];
+        let mut queue = VecDeque::new();
+        visited[src] = true;
+        queue.push_back(src);
+        while let Some(cur) = queue.pop_front() {
+            for &next in &self.adj[cur] {
+                if next >= LOOP_SEGMENTS {
+                    continue; // skip spur segments
+                }
+                if !visited[next] {
+                    visited[next] = true;
+                    parent[next] = cur;
+                    if next == dst {
+                        let mut path = Vec::new();
+                        let mut n = dst;
+                        while n != src {
+                            path.push(n);
+                            n = parent[n];
+                        }
+                        path.reverse();
+                        return Some(path);
+                    }
+                    queue.push_back(next);
+                }
+            }
+        }
+        None
+    }
+
     /// Try to claim a segment for an AGV. Returns false if occupied.
     pub fn claim(&mut self, seg: SegmentId, agv: AgvId) -> bool {
         if self.occupant[seg].is_some() {
@@ -166,6 +228,28 @@ impl LaneNetwork {
 
     pub fn occupancy(&self) -> &[Option<AgvId>] {
         &self.occupant
+    }
+
+    /// Find the nearest free loop segment reachable from `seg` (BFS).
+    pub fn nearest_free_loop(&self, seg: SegmentId, requester_seg: SegmentId) -> Option<SegmentId> {
+        let mut visited = [false; TOTAL_SEGMENTS];
+        let mut queue = VecDeque::new();
+        visited[seg] = true;
+        visited[requester_seg] = true;
+        queue.push_back(seg);
+        while let Some(cur) = queue.pop_front() {
+            for &next in &self.adj[cur] {
+                if next >= LOOP_SEGMENTS || visited[next] {
+                    continue;
+                }
+                visited[next] = true;
+                if self.occupant[next].is_none() {
+                    return Some(next);
+                }
+                queue.push_back(next);
+            }
+        }
+        None
     }
 }
 
