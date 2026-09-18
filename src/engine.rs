@@ -155,3 +155,74 @@ impl SimEngine {
         Some(te)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn events_pop_in_time_order() {
+        let mut engine = SimEngine::new();
+        engine.schedule(10.0, Event::SchedulerTick);
+        engine.schedule(5.0, Event::SchedulerTick);
+        engine.schedule(15.0, Event::SchedulerTick);
+
+        let e1 = engine.step().unwrap();
+        let e2 = engine.step().unwrap();
+        let e3 = engine.step().unwrap();
+
+        assert_eq!(e1.time, 5.0);
+        assert_eq!(e2.time, 10.0);
+        assert_eq!(e3.time, 15.0);
+    }
+
+    #[test]
+    fn empty_engine_returns_none() {
+        let mut engine = SimEngine::new();
+        assert!(engine.step().is_none());
+    }
+
+    #[test]
+    fn clock_advances_to_event_time() {
+        let mut engine = SimEngine::new();
+        engine.schedule(42.0, Event::SchedulerTick);
+        engine.step();
+        assert_eq!(engine.now(), 42.0);
+    }
+
+    #[test]
+    fn event_count_increments() {
+        let mut engine = SimEngine::new();
+        engine.schedule(1.0, Event::SchedulerTick);
+        engine.schedule(2.0, Event::SchedulerTick);
+        assert_eq!(engine.events_processed(), 0);
+        engine.step();
+        assert_eq!(engine.events_processed(), 1);
+        engine.step();
+        assert_eq!(engine.events_processed(), 2);
+    }
+
+    #[test]
+    fn schedule_many_enqueues_all() {
+        let mut engine = SimEngine::new();
+        let events = vec![
+            TimedEvent { time: 3.0, event: Event::SchedulerTick },
+            TimedEvent { time: 1.0, event: Event::SchedulerTick },
+            TimedEvent { time: 2.0, event: Event::SchedulerTick },
+        ];
+        engine.schedule_many(events);
+
+        assert_eq!(engine.step().unwrap().time, 1.0);
+        assert_eq!(engine.step().unwrap().time, 2.0);
+        assert_eq!(engine.step().unwrap().time, 3.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot schedule event in the past")]
+    fn schedule_in_past_panics() {
+        let mut engine = SimEngine::new();
+        engine.schedule(10.0, Event::SchedulerTick);
+        engine.step();
+        engine.schedule(5.0, Event::SchedulerTick);
+    }
+}

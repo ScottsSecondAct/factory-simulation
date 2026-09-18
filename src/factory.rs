@@ -315,3 +315,197 @@ impl PalletMagazine {
         self.total_issued
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Mill FSM ───────────────────────────────────────────────────
+    #[test]
+    fn mill_starts_idle() {
+        let mill = Mill::new(0);
+        assert_eq!(mill.state, MillState::Idle);
+        assert!(mill.is_available());
+    }
+
+    #[test]
+    fn mill_full_lifecycle() {
+        let mut mill = Mill::new(0);
+
+        mill.begin_tool_change(3);
+        assert_eq!(mill.state, MillState::ToolChange);
+        assert_eq!(mill.loaded_tool, Some(3));
+
+        mill.finish_tool_change();
+        assert_eq!(mill.state, MillState::Idle);
+
+        mill.begin_loading();
+        assert_eq!(mill.state, MillState::Loading);
+
+        mill.begin_machining(1, 0);
+        assert_eq!(mill.state, MillState::Machining);
+        assert_eq!(mill.current_job, Some(1));
+
+        mill.finish_machining(100.0);
+        assert_eq!(mill.state, MillState::Unloading);
+        assert_eq!(mill.busy_time, 100.0);
+
+        mill.finish_unloading();
+        assert_eq!(mill.state, MillState::Idle);
+        assert_eq!(mill.parts_completed, 1);
+    }
+
+    #[test]
+    fn mill_chip_full_triggers_on_unload() {
+        let mut mill = Mill::new(0);
+        mill.chip_level = CHIP_CAPACITY; // already full
+        mill.begin_loading();
+        mill.begin_machining(1, 0);
+        mill.finish_machining(100.0); // adds more chips
+        mill.finish_unloading();
+        assert_eq!(mill.state, MillState::ChipFull);
+    }
+
+    #[test]
+    fn mill_chip_evac_resets_level() {
+        let mut mill = Mill::new(0);
+        mill.chip_level = CHIP_CAPACITY;
+        mill.state = MillState::ChipFull;
+        mill.finish_chip_evac();
+        assert_eq!(mill.chip_level, 0.0);
+        assert_eq!(mill.state, MillState::Idle);
+    }
+
+    #[test]
+    fn mill_fault_and_repair() {
+        let mut mill = Mill::new(0);
+        mill.begin_loading();
+        mill.loaded_pallet = Some(42);
+        mill.loaded_pallet_type = Some(2);
+
+        mill.fault(100.0);
+        assert_eq!(mill.state, MillState::Faulted);
+        assert!(!mill.is_available());
+
+        let returned = mill.repair(200.0);
+        assert_eq!(mill.state, MillState::Idle);
+        assert_eq!(mill.fault_time, 100.0);
+        assert_eq!(returned, Some((2, 42)));
+        assert!(mill.loaded_pallet.is_none());
+    }
+
+    #[test]
+    fn mill_repair_no_pallet_returns_none() {
+        let mut mill = Mill::new(0);
+        mill.fault(0.0);
+        assert_eq!(mill.repair(10.0), None);
+    }
+
+    #[test]
+    fn mill_needs_tool_change() {
+        let mut mill = Mill::new(0);
+        assert!(mill.needs_tool_change(5));
+        mill.loaded_tool = Some(5);
+        assert!(!mill.needs_tool_change(5));
+        assert!(mill.needs_tool_change(3));
+    }
+
+    #[test]
+    fn mill_grid_position() {
+        let m0 = Mill::new(0);
+        assert_eq!((m0.row, m0.col), (0, 0));
+        let m6 = Mill::new(6);
+        assert_eq!((m6.row, m6.col), (1, 1));
+        let m24 = Mill::new(24);
+        assert_eq!((m24.row, m24.col), (4, 4));
+    }
+
+    // ── Tool Crib ──────────────────────────────────────────────────
+    #[test]
+    fn tool_crib_checkout_and_checkin() {
+        let mut crib = ToolCrib::new(4, 2);
+        assert_eq!(crib.available(0), 2);
+
+        assert!(crib.checkout(0));
+        assert_eq!(crib.available(0), 1);
+
+        assert!(crib.checkout(0));
+        assert_eq!(crib.available(0), 0);
+
+        assert!(!crib.checkout(0));
+
+        crib.checkin(0);
+        assert_eq!(crib.available(0), 1);
+        assert_eq!(crib.total_issues(), 2);
+    }
+
+    #[test]
+    fn tool_crib_unknown_tool_unavailable() {
+        let crib = ToolCrib::new(2, 3);
+        assert_eq!(crib.available(99), 0);
+    }
+
+    // ── Pallet Magazine ────────────────────────────────────────────
+    #[test]
+    fn pallet_take_and_return() {
+        let mut mag = PalletMagazine::new(2, 3);
+        assert_eq!(mag.available(0), 3);
+
+        let p1 = mag.take(0).unwrap();
+        assert_eq!(mag.available(0), 2);
+
+        mag.return_pallet(0, p1);
+        assert_eq!(mag.available(0), 3);
+    }
+
+    #[test]
+    fn pallet_exhaustion() {
+        let mut mag = PalletMagazine::new(1, 1);
+        assert!(mag.take(0).is_some());
+        assert!(mag.take(0).is_none());
+    }
+
+    // ── Work Prep Station ──────────────────────────────────────────
+    #[test]
+    fn work_prep_enqueue_and_process() {
+        let mut wp = WorkPrepStation::new();
+        wp.enqueue(PrepItem { job_id: 1, op_index: 0, mill_id: 0 });
+        assert_eq!(wp.total_items(), 1);
+
+        let (item, gen) = wp.try_start().unwrap();
+        assert_eq!(item.job_id, 1);
+        assert!(gen > 0);
+        assert_eq!(wp.state, WorkPrepState::Processing);
+        assert_eq!(wp.total_items(), 1); // still counts processing item
+
+        let done = wp.finish_processing().unwrap();
+        assert_eq!(done.job_id, 1);
+        assert_eq!(wp.state, WorkPrepState::Idle);
+        assert_eq!(wp.jobs_completed, 1);
+    }
+
+    #[test]
+    fn work_prep_idle_with_empty_queue_returns_none() {
+        let mut wp = WorkPrepStation::new();
+        assert!(wp.try_start().is_none());
+    }
+
+    #[test]
+    fn work_prep_fault_requeues_current() {
+        let mut wp = WorkPrepStation::new();
+        wp.enqueue(PrepItem { job_id: 1, op_index: 0, mill_id: 0 });
+        wp.try_start();
+        assert_eq!(wp.state, WorkPrepState::Processing);
+
+        wp.fault(100.0);
+        assert_eq!(wp.state, WorkPrepState::Faulted);
+        assert_eq!(wp.total_items(), 1); // item requeued
+
+        wp.repair(200.0);
+        assert_eq!(wp.state, WorkPrepState::Idle);
+        assert_eq!(wp.fault_time, 100.0);
+
+        let (item, _) = wp.try_start().unwrap();
+        assert_eq!(item.job_id, 1); // same item retried
+    }
+}

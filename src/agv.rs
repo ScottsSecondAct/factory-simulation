@@ -276,3 +276,153 @@ impl WaitForGraph {
         Vec::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── AGV basic behavior ─────────────────────────────────────────
+    #[test]
+    fn agv_starts_idle() {
+        let agv = Agv::new(0, 5);
+        assert!(agv.is_idle());
+        assert_eq!(agv.segment, 5);
+        assert!(matches!(agv.cargo, Cargo::Empty));
+    }
+
+    #[test]
+    fn amr_cannot_enter_spur() {
+        let amr = Agv::new_amr(0, 0);
+        assert!(!amr.can_enter_spur());
+        let agv = Agv::new(1, 0);
+        assert!(agv.can_enter_spur());
+    }
+
+    #[test]
+    fn agv_advance_follows_path() {
+        let mut agv = Agv::new(0, 0);
+        agv.path = vec![1, 2, 3];
+        agv.path_cursor = 0;
+
+        assert_eq!(agv.next_segment(), Some(1));
+        agv.advance();
+        assert_eq!(agv.segment, 1);
+        assert_eq!(agv.next_segment(), Some(2));
+        agv.advance();
+        agv.advance();
+        assert!(agv.at_destination());
+        assert_eq!(agv.distance_traveled, 3);
+    }
+
+    #[test]
+    fn agv_repair_clears_state() {
+        let mut agv = Agv::new(0, 5);
+        agv.state = AgvState::Faulted;
+        agv.cargo = Cargo::ChipBin(3);
+        agv.path = vec![1, 2];
+        agv.path_cursor = 1;
+
+        agv.repair();
+        assert!(agv.is_idle());
+        assert!(matches!(agv.cargo, Cargo::Empty));
+        assert!(agv.path.is_empty());
+        assert_eq!(agv.path_cursor, 0);
+    }
+
+    // ── Lane network ───────────────────────────────────────────────
+    #[test]
+    fn lane_network_has_correct_segment_count() {
+        let net = LaneNetwork::new();
+        assert_eq!(net.occupant.len(), TOTAL_SEGMENTS);
+    }
+
+    #[test]
+    fn route_same_segment_is_empty() {
+        let net = LaneNetwork::new();
+        let path = net.route(5, 5).unwrap();
+        assert!(path.is_empty());
+    }
+
+    #[test]
+    fn route_adjacent_segments() {
+        let net = LaneNetwork::new();
+        let path = net.route(0, 1).unwrap();
+        assert_eq!(path, vec![1]);
+    }
+
+    #[test]
+    fn route_to_spur_goes_through_loop() {
+        let net = LaneNetwork::new();
+        let spur_0 = mill_spur(0); // spur for mill 0
+        let path = net.route(0, spur_0).unwrap();
+        assert!(!path.is_empty());
+        assert_eq!(*path.last().unwrap(), spur_0);
+    }
+
+    #[test]
+    fn claim_and_release() {
+        let mut net = LaneNetwork::new();
+        assert!(net.claim(5, 0));
+        assert_eq!(net.occupant(5), Some(0));
+        assert!(!net.claim(5, 1)); // already occupied
+        net.release(5);
+        assert!(net.occupant(5).is_none());
+        assert!(net.claim(5, 1));
+    }
+
+    // ── Wait-for graph ─────────────────────────────────────────────
+    #[test]
+    fn no_cycle_in_empty_graph() {
+        let wfg = WaitForGraph::new();
+        assert!(wfg.find_cycle().is_empty());
+    }
+
+    #[test]
+    fn no_cycle_in_chain() {
+        let mut wfg = WaitForGraph::new();
+        wfg.add_wait(0, 1);
+        wfg.add_wait(1, 2);
+        assert!(wfg.find_cycle().is_empty());
+    }
+
+    #[test]
+    fn detects_two_node_cycle() {
+        let mut wfg = WaitForGraph::new();
+        wfg.add_wait(0, 1);
+        wfg.add_wait(1, 0);
+        let cycle = wfg.find_cycle();
+        assert_eq!(cycle.len(), 2);
+        assert!(cycle.contains(&0));
+        assert!(cycle.contains(&1));
+    }
+
+    #[test]
+    fn detects_three_node_cycle() {
+        let mut wfg = WaitForGraph::new();
+        wfg.add_wait(0, 1);
+        wfg.add_wait(1, 2);
+        wfg.add_wait(2, 0);
+        let cycle = wfg.find_cycle();
+        assert_eq!(cycle.len(), 3);
+    }
+
+    #[test]
+    fn remove_breaks_cycle() {
+        let mut wfg = WaitForGraph::new();
+        wfg.add_wait(0, 1);
+        wfg.add_wait(1, 0);
+        assert!(!wfg.find_cycle().is_empty());
+
+        wfg.remove(0);
+        assert!(wfg.find_cycle().is_empty());
+    }
+
+    #[test]
+    fn clear_resets_graph() {
+        let mut wfg = WaitForGraph::new();
+        wfg.add_wait(0, 1);
+        wfg.add_wait(1, 0);
+        wfg.clear();
+        assert!(wfg.find_cycle().is_empty());
+    }
+}
