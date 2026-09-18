@@ -10,18 +10,13 @@ use std::io::{self, BufRead, Write};
 use std::sync::mpsc;
 use std::thread;
 
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 
-use crate::agv::{Agv, LaneNetwork};
 use crate::engine::{Event, SimEngine, TimedEvent};
-use crate::factory::{Mill, PalletMagazine, PrepItem, ToolCrib, WorkPrepStation};
-use crate::fault::{FaultConfig, FaultInjector};
-use crate::metrics::Metrics;
-use crate::reconcile::Reconciler;
+use crate::fault::FaultConfig;
 use crate::scheduler::Scheduler;
 use crate::types::*;
+use crate::world::{Notification, World, WorldConfig};
 
 // ── Outgoing messages (sim → dashboard) ────────────────────────────
 
@@ -236,19 +231,8 @@ pub struct IpcConfig {
 // ── IPC runner ─────────────────────────────────────────────────────
 
 pub struct IpcRunner {
-    mills: Vec<Mill>,
-    agvs: Vec<Agv>,
-    lanes: LaneNetwork,
-    tool_crib: ToolCrib,
-    pallet_mag: PalletMagazine,
-    scheduler: Scheduler,
-    fault_inj: FaultInjector,
-    work_prep: WorkPrepStation,
-    reconciler: Reconciler,
-    metrics: Metrics,
+    world: World,
     engine: SimEngine,
-    rng: StdRng,
-
     config: IpcConfig,
     paused: bool,
     speed: usize,
@@ -260,26 +244,19 @@ pub struct IpcRunner {
 
 impl IpcRunner {
     pub fn new(config: IpcConfig) -> Self {
-        let mills: Vec<Mill> = (0..NUM_MILLS).map(Mill::new).collect();
-        let mut agvs: Vec<Agv> = (0..NUM_AGVS)
-            .map(|i| Agv::new(i, (i * 3) % LOOP_SEGMENTS))
-            .collect();
-        for i in 0..config.num_amrs {
-            let id = NUM_AGVS + i;
-            let start = ((NUM_AGVS + i) * 3 + 1) % LOOP_SEGMENTS;
-            agvs.push(Agv::new_amr(id, start));
-        }
-        let mut lanes = LaneNetwork::new();
-        for agv in &agvs {
-            lanes.claim(agv.segment, agv.id);
-        }
-
-        let tool_crib = ToolCrib::new(config.tool_types, config.tool_copies);
-        let pallet_mag = PalletMagazine::new(config.pallet_types, config.pallet_copies);
-        let fault_inj = FaultInjector::new(config.fault_cfg.clone());
-        let metrics = Metrics::new(config.snapshot_interval);
+        let world_cfg = WorldConfig {
+            fault_cfg: config.fault_cfg.clone(),
+            num_amrs: config.num_amrs,
+            seed: config.seed,
+            tool_types: config.tool_types,
+            tool_copies: config.tool_copies,
+            pallet_types: config.pallet_types,
+            pallet_copies: config.pallet_copies,
+            snapshot_interval: config.snapshot_interval,
+            max_wip: config.max_wip,
+        };
+        let world = World::new(world_cfg);
         let engine = SimEngine::new();
-        let rng = StdRng::seed_from_u64(config.seed);
 
         let (cmd_tx, cmd_rx) = mpsc::channel();
         thread::spawn(move || {
@@ -303,22 +280,9 @@ impl IpcRunner {
             }
         });
 
-        let mut scheduler = Scheduler::new();
-        scheduler.max_wip = config.max_wip;
-
         Self {
-            mills,
-            agvs,
-            lanes,
-            tool_crib,
-            pallet_mag,
-            scheduler,
-            fault_inj,
-            work_prep: WorkPrepStation::new(),
-            reconciler: Reconciler::new(),
-            metrics,
+            world,
             engine,
-            rng,
             config,
             paused: true,
             speed: 1,
@@ -330,7 +294,8 @@ impl IpcRunner {
     }
 
     pub fn run(&mut self) {
-        self.seed_events();
+        let seed_events = self.world.seed_events();
+        self.engine.schedule_many(seed_events);
         self.emit_ready();
 
         loop {
@@ -347,15 +312,6 @@ impl IpcRunner {
             }
             self.process_batch();
         }
-    }
-
-    fn seed_events(&mut self) {
-        let first_job = self.generate_job(0.0);
-        self.engine.schedule(0.0, Event::JobArrival(first_job));
-        self.engine.schedule(0.0, Event::SchedulerTick);
-        let fault_events = self.fault_inj.seed_faults(&mut self.rng);
-        self.engine.schedule_many(fault_events);
-        self.engine.schedule(0.0, Event::ReconciliationTick);
     }
 
     fn drain_commands(&mut self) {
@@ -384,10 +340,10 @@ impl IpcRunner {
                 self.engine.schedule(now, Event::FaultOccur(target));
             }
             InCommand::SetParam { param, value } => match param.as_str() {
-                "mill_mtbf" => self.fault_inj.config.mill_mtbf = value,
-                "agv_mtbf" => self.fault_inj.config.agv_mtbf = value,
+                "mill_mtbf" => self.world.fault_inj.config.mill_mtbf = value,
+                "agv_mtbf" => self.world.fault_inj.config.agv_mtbf = value,
                 "snapshot_interval" => self.config.snapshot_interval = value,
-                "max_wip" => self.scheduler.max_wip = value as usize,
+                "max_wip" => self.world.scheduler.max_wip = value as usize,
                 _ => eprintln!("[WARN] unknown param: {param}"),
             },
             InCommand::Step { count } => {
@@ -420,10 +376,43 @@ impl IpcRunner {
         }
         let now = te.time;
         self.emit_event_if_notable(&te);
-        let new_events = self.handle_event(&te);
+        let (new_events, notes) = self.world.handle(&te);
         self.engine.schedule_many(new_events);
+        self.handle_notifications(now, notes);
         self.maybe_emit_snapshot(now);
         true
+    }
+
+    fn handle_notifications(&self, now: SimTime, notes: Vec<Notification>) {
+        for note in notes {
+            match note {
+                Notification::WorkPrepReady { job_id, mill_id } => {
+                    eprintln!(
+                        "[INFO] [{now:.1}s] WORK-PREP: job {job_id} ready for mill {mill_id}"
+                    );
+                }
+                Notification::Reconciliation { pass, ref drifts } => {
+                    for d in drifts {
+                        emit_json(&OutMessage::Event {
+                            time: now,
+                            kind: "drift",
+                            detail: serde_json::json!({
+                                "category": format!("{:?}", d.category),
+                                "description": d.description,
+                                "pass": pass,
+                            }),
+                        });
+                    }
+                    eprintln!(
+                        "[INFO] [{now:.1}s] RECONCILIATION: pass {pass} found {} drift(s)",
+                        drifts.len()
+                    );
+                }
+                // FaultOccurred / Repaired / ChipEvacDone are already
+                // emitted by emit_event_if_notable before handling.
+                _ => {}
+            }
+        }
     }
 
     fn maybe_emit_snapshot(&mut self, now: SimTime) {
@@ -452,15 +441,15 @@ impl IpcRunner {
                 num_amrs: self.config.num_amrs,
                 duration: self.config.duration,
                 snapshot_interval: self.config.snapshot_interval,
-                faults_enabled: self.fault_inj.config.enabled,
-                mill_mtbf: self.fault_inj.config.mill_mtbf,
-                agv_mtbf: self.fault_inj.config.agv_mtbf,
+                faults_enabled: self.world.fault_inj.config.enabled,
+                mill_mtbf: self.world.fault_inj.config.mill_mtbf,
+                agv_mtbf: self.world.fault_inj.config.agv_mtbf,
                 seed: self.config.seed,
                 tool_types: self.config.tool_types,
                 pallet_types: self.config.pallet_types,
                 loop_segments: LOOP_SEGMENTS,
                 total_segments: TOTAL_SEGMENTS,
-                max_wip: self.scheduler.max_wip,
+                max_wip: self.world.scheduler.max_wip,
             },
             layout: LayoutInfo {
                 mills: mill_layouts,
@@ -476,7 +465,8 @@ impl IpcRunner {
     }
 
     fn emit_snapshot(&mut self, now: SimTime) {
-        let total_parts: u64 = self.mills.iter().map(|m| m.parts_completed).sum();
+        let w = &self.world;
+        let total_parts: u64 = w.mills.iter().map(|m| m.parts_completed).sum();
         self.throughput_history.push((now, total_parts));
 
         let rate = if now > 0.0 {
@@ -485,14 +475,14 @@ impl IpcRunner {
             0.0
         };
 
-        let total_busy: SimTime = self.mills.iter().map(|m| m.busy_time).sum();
+        let total_busy: SimTime = w.mills.iter().map(|m| m.busy_time).sum();
         let avg_util = if now > 0.0 {
             total_busy / (now * NUM_MILLS as f64)
         } else {
             0.0
         };
 
-        let mill_snaps: Vec<MillSnap> = self
+        let mill_snaps: Vec<MillSnap> = w
             .mills
             .iter()
             .map(|m| MillSnap {
@@ -510,7 +500,7 @@ impl IpcRunner {
             })
             .collect();
 
-        let agv_snaps: Vec<AgvSnap> = self
+        let agv_snaps: Vec<AgvSnap> = w
             .agvs
             .iter()
             .map(|a| AgvSnap {
@@ -525,14 +515,14 @@ impl IpcRunner {
             })
             .collect();
 
-        let lane_occ: Vec<i32> = self
+        let lane_occ: Vec<i32> = w
             .lanes
             .occupancy()
             .iter()
             .map(|o| o.map_or(-1, |id| id as i32))
             .collect();
 
-        let next_8: Vec<JobPreview> = self
+        let next_8: Vec<JobPreview> = w
             .scheduler
             .job_queue
             .iter()
@@ -552,15 +542,15 @@ impl IpcRunner {
             agvs: agv_snaps,
             lane_occupancy: lane_occ,
             tool_crib: ToolCribSnap {
-                inventory: self.tool_crib.inventory().clone(),
-                total_issues: self.tool_crib.total_issues(),
+                inventory: w.tool_crib.inventory().clone(),
+                total_issues: w.tool_crib.total_issues(),
             },
             pallet_magazine: PalletMagSnap {
-                available: self.pallet_mag.available_counts(),
-                total_issued: self.pallet_mag.total_issued(),
+                available: w.pallet_mag.available_counts(),
+                total_issued: w.pallet_mag.total_issued(),
             },
             job_queue: JobQueueSnap {
-                depth: self.scheduler.job_queue.len(),
+                depth: w.scheduler.job_queue.len(),
                 next_8,
             },
             metrics: MetricsSnap {
@@ -568,18 +558,18 @@ impl IpcRunner {
                 throughput_rate: rate,
                 avg_utilization: avg_util,
                 avg_queue_depth: 0.0,
-                deadlocks: self.scheduler.deadlocks_detected,
-                faults: self.fault_inj.total_faults,
-                wip: Scheduler::wip_count(&self.mills),
-                max_wip: self.scheduler.max_wip,
-                back_pressure_events: self.scheduler.back_pressure_events,
-                chip_evacuations: self.scheduler.chip_evacs_dispatched,
-                work_prep_jobs: self.work_prep.jobs_completed,
-                work_prep_queue: self.work_prep.total_items(),
-                work_prep_state: self.work_prep.state.clone(),
-                reconciliation_passes: self.reconciler.passes,
-                reconciliation_drifts: self.reconciler.total_drifts,
-                max_drifts_in_pass: self.reconciler.max_drifts_in_pass,
+                deadlocks: w.scheduler.deadlocks_detected,
+                faults: w.fault_inj.total_faults,
+                wip: Scheduler::wip_count(&w.mills),
+                max_wip: w.scheduler.max_wip,
+                back_pressure_events: w.scheduler.back_pressure_events,
+                chip_evacuations: w.scheduler.chip_evacs_dispatched,
+                work_prep_jobs: w.work_prep.jobs_completed,
+                work_prep_queue: w.work_prep.total_items(),
+                work_prep_state: w.work_prep.state.clone(),
+                reconciliation_passes: w.reconciler.passes,
+                reconciliation_drifts: w.reconciler.total_drifts,
+                max_drifts_in_pass: w.reconciler.max_drifts_in_pass,
             },
         };
 
@@ -592,15 +582,15 @@ impl IpcRunner {
         match &te.event {
             Event::FaultOccur(target) => {
                 let repair_time = match target {
-                    FaultTarget::Mill(_) => now + self.fault_inj.config.mill_repair,
+                    FaultTarget::Mill(_) => now + self.world.fault_inj.config.mill_repair,
                     FaultTarget::Agv(id) => {
                         if *id >= NUM_AGVS {
-                            now + self.fault_inj.config.amr_repair
+                            now + self.world.fault_inj.config.amr_repair
                         } else {
-                            now + self.fault_inj.config.agv_repair
+                            now + self.world.fault_inj.config.agv_repair
                         }
                     }
-                    FaultTarget::WorkPrep => now + self.fault_inj.config.work_prep_repair,
+                    FaultTarget::WorkPrep => now + self.world.fault_inj.config.work_prep_repair,
                 };
                 emit_json(&OutMessage::Event {
                     time: now,
@@ -610,15 +600,10 @@ impl IpcRunner {
                         "expected_repair": repair_time,
                     }),
                 });
-                let label = match target {
-                    FaultTarget::Mill(id) => format!("Mill {id}"),
-                    FaultTarget::Agv(id) => {
-                        let vtype = if *id >= NUM_AGVS { "AMR" } else { "AGV" };
-                        format!("{vtype} {id}")
-                    }
-                    FaultTarget::WorkPrep => "Work Prep".to_string(),
-                };
-                eprintln!("[INFO] [{now:.1}s] FAULT: {label} down");
+                eprintln!(
+                    "[INFO] [{now:.1}s] FAULT: {} down",
+                    self.world.fault_label(target)
+                );
             }
             Event::FaultRepair(target) => {
                 emit_json(&OutMessage::Event {
@@ -626,15 +611,10 @@ impl IpcRunner {
                     kind: "repair",
                     detail: serde_json::json!({ "target": target }),
                 });
-                let label = match target {
-                    FaultTarget::Mill(id) => format!("Mill {id}"),
-                    FaultTarget::Agv(id) => {
-                        let vtype = if *id >= NUM_AGVS { "AMR" } else { "AGV" };
-                        format!("{vtype} {id}")
-                    }
-                    FaultTarget::WorkPrep => "Work Prep".to_string(),
-                };
-                eprintln!("[INFO] [{now:.1}s] REPAIR: {label} back online");
+                eprintln!(
+                    "[INFO] [{now:.1}s] REPAIR: {} back online",
+                    self.world.fault_label(target)
+                );
             }
             Event::MillMachiningDone {
                 mill_id, job_id, ..
@@ -672,9 +652,10 @@ impl IpcRunner {
     }
 
     fn emit_summary(&self) {
+        let w = &self.world;
         let dur = self.config.duration;
-        let total_parts: u64 = self.mills.iter().map(|m| m.parts_completed).sum();
-        let utilizations: Vec<f64> = self
+        let total_parts: u64 = w.mills.iter().map(|m| m.parts_completed).sum();
+        let utilizations: Vec<f64> = w
             .mills
             .iter()
             .map(|m| if dur > 0.0 { m.busy_time / dur } else { 0.0 })
@@ -685,15 +666,15 @@ impl IpcRunner {
             sim_duration: dur,
             events_processed: self.engine.events_processed(),
             jobs_completed: total_parts,
-            jobs_dispatched: self.scheduler.jobs_dispatched,
-            deadlocks_detected: self.scheduler.deadlocks_detected,
-            total_faults: self.fault_inj.total_faults,
-            back_pressure_events: self.scheduler.back_pressure_events,
-            chip_evacuations: self.scheduler.chip_evacs_dispatched,
-            work_prep_jobs: self.work_prep.jobs_completed,
-            reconciliation_passes: self.reconciler.passes,
-            reconciliation_drifts: self.reconciler.total_drifts,
-            max_drifts_in_pass: self.reconciler.max_drifts_in_pass,
+            jobs_dispatched: w.scheduler.jobs_dispatched,
+            deadlocks_detected: w.scheduler.deadlocks_detected,
+            total_faults: w.fault_inj.total_faults,
+            back_pressure_events: w.scheduler.back_pressure_events,
+            chip_evacuations: w.scheduler.chip_evacs_dispatched,
+            work_prep_jobs: w.work_prep.jobs_completed,
+            reconciliation_passes: w.reconciler.passes,
+            reconciliation_drifts: w.reconciler.total_drifts,
+            max_drifts_in_pass: w.reconciler.max_drifts_in_pass,
             mill_utilization: utilizations,
             avg_utilization: avg_util,
             avg_queue_depth: 0.0,
@@ -702,361 +683,10 @@ impl IpcRunner {
             } else {
                 0.0
             },
-            agv_distance: self.agvs.iter().map(|a| a.distance_traveled).collect(),
-            agv_deliveries: self.agvs.iter().map(|a| a.loads_delivered).collect(),
+            agv_distance: w.agvs.iter().map(|a| a.distance_traveled).collect(),
+            agv_deliveries: w.agvs.iter().map(|a| a.loads_delivered).collect(),
         });
         emit_json(&msg);
-    }
-
-    // Reuse the same event handling logic as World in main.rs.
-    fn handle_event(&mut self, te: &TimedEvent) -> Vec<TimedEvent> {
-        let now = te.time;
-        let mut out = Vec::new();
-
-        match &te.event {
-            Event::JobArrival(job) => {
-                self.scheduler.enqueue(job.clone());
-                let gap = -120.0 * self.rng.gen::<f64>().ln();
-                let next_job = self.generate_job(now + gap);
-                out.push(TimedEvent {
-                    time: now + gap,
-                    event: Event::JobArrival(next_job),
-                });
-            }
-
-            Event::ToolChangeDone(mid) => {
-                if self.mills[*mid].state == MillState::ToolChange {
-                    self.mills[*mid].finish_tool_change();
-                }
-            }
-            Event::MillLoadDone(mid) => {
-                if self.mills[*mid].state != MillState::Loading {
-                    // Stale — mill faulted or state changed
-                } else {
-                    let m = &mut self.mills[*mid];
-                    if let (Some(jid), op_idx) = (m.current_job, m.current_op) {
-                        m.begin_machining(jid, op_idx);
-                        let duration = 300.0 + self.rng.gen::<f64>() * 600.0;
-                        out.push(TimedEvent {
-                            time: now + duration,
-                            event: Event::MillMachiningDone {
-                                mill_id: *mid,
-                                job_id: jid,
-                                op_index: op_idx,
-                                duration,
-                            },
-                        });
-                    }
-                }
-            }
-            Event::MillMachiningDone {
-                mill_id, duration, ..
-            } => {
-                if self.mills[*mill_id].state != MillState::Machining {
-                    // Stale — mill faulted since machining started
-                } else {
-                    self.mills[*mill_id].finish_machining(*duration);
-                    out.push(TimedEvent {
-                        time: now + MILL_UNLOAD_TIME,
-                        event: Event::MillUnloadDone(*mill_id),
-                    });
-                }
-            }
-            Event::MillUnloadDone(mid) => {
-                if self.mills[*mid].state != MillState::Unloading {
-                    // Stale — mill faulted during unloading
-                } else {
-                    if let Some(pid) = self.mills[*mid].loaded_pallet.take() {
-                        let pt = self.mills[*mid].loaded_pallet_type.take().unwrap_or(0);
-                        self.pallet_mag.return_pallet(pt, pid);
-                    }
-                    self.mills[*mid].finish_unloading();
-                }
-            }
-
-            Event::AgvArrived { agv_id, segment } => {
-                let aid = *agv_id;
-                let seg = *segment;
-                if self.agvs[aid].state == AgvState::Faulted
-                    || self.agvs[aid].state == AgvState::Idle
-                {
-                    // Stale — vehicle faulted or was reset
-                } else if self.lanes.claim(seg, aid) {
-                    self.lanes.release(self.agvs[aid].segment);
-                    self.agvs[aid].advance();
-                    if self.agvs[aid].at_destination() {
-                        self.agvs[aid].state = AgvState::Unloading;
-                        out.push(TimedEvent {
-                            time: now + MILL_LOAD_TIME,
-                            event: Event::AgvUnloadDone { agv_id: aid },
-                        });
-                    } else if let Some(next) = self.agvs[aid].next_segment() {
-                        out.push(TimedEvent {
-                            time: now + self.agvs[aid].travel_time(),
-                            event: Event::AgvArrived {
-                                agv_id: aid,
-                                segment: next,
-                            },
-                        });
-                    }
-                } else {
-                    self.agvs[aid].state = AgvState::Blocked;
-                    if let Some(blocker) = self.lanes.occupant(seg) {
-                        self.scheduler.wait_graph.add_wait(aid, blocker);
-                    }
-                }
-            }
-            Event::AgvLoadDone { agv_id } => {
-                self.agvs[*agv_id].state = AgvState::Traveling;
-                self.agvs[*agv_id].loads_delivered += 1;
-            }
-            Event::AgvUnloadDone { agv_id } => {
-                if self.agvs[*agv_id].state == AgvState::Faulted
-                    || self.agvs[*agv_id].state == AgvState::Idle
-                {
-                    // Stale — vehicle faulted or was reset
-                } else {
-                    match &self.agvs[*agv_id].cargo {
-                        Cargo::Workpiece { job_id, op_index } => {
-                            let seg = self.agvs[*agv_id].segment;
-                            if seg >= SPUR_BASE {
-                                let mid = seg - SPUR_BASE;
-                                if mid < NUM_MILLS {
-                                    self.mills[mid].current_job = Some(*job_id);
-                                    self.mills[mid].current_op = *op_index;
-                                    out.push(TimedEvent {
-                                        time: now + MILL_LOAD_TIME,
-                                        event: Event::MillLoadDone(mid),
-                                    });
-                                }
-                            }
-                        }
-                        Cargo::ChipBin(mid) => {
-                            out.push(TimedEvent {
-                                time: now + CHIP_EVAC_TIME,
-                                event: Event::ChipEvacDone(*mid),
-                            });
-                        }
-                        Cargo::PrepPallet {
-                            job_id,
-                            op_index,
-                            mill_id,
-                        } => {
-                            let item = PrepItem {
-                                job_id: *job_id,
-                                op_index: *op_index,
-                                mill_id: *mill_id,
-                            };
-                            self.work_prep.enqueue(item);
-                            if let Some((prep_item, gen)) = self.work_prep.try_start() {
-                                let prep_time = WORK_PREP_TIME_MIN
-                                    + self.rng.gen::<f64>()
-                                        * (WORK_PREP_TIME_MAX - WORK_PREP_TIME_MIN);
-                                out.push(TimedEvent {
-                                    time: now + prep_time,
-                                    event: Event::WorkPrepDone {
-                                        job_id: prep_item.job_id,
-                                        op_index: prep_item.op_index,
-                                        mill_id: prep_item.mill_id,
-                                        gen,
-                                    },
-                                });
-                            }
-                        }
-                        _ => {}
-                    }
-                    self.agvs[*agv_id].cargo = Cargo::Empty;
-                    self.agvs[*agv_id].state = AgvState::Idle;
-                    self.agvs[*agv_id].loads_delivered += 1;
-                }
-            }
-
-            Event::ToolIssued { .. } | Event::PalletIssued { .. } => {}
-
-            Event::ChipEvacDone(mid) => {
-                self.mills[*mid].finish_chip_evac();
-                self.scheduler.clear_pending_chip_evac(*mid);
-            }
-
-            Event::WorkPrepDone {
-                job_id,
-                op_index: _,
-                mill_id,
-                gen,
-            } => {
-                if *gen != self.work_prep.current_generation()
-                    || self.work_prep.state != WorkPrepState::Processing
-                {
-                    // Stale event
-                } else if let Some(item) = self.work_prep.finish_processing() {
-                    self.scheduler.pending_prep_deliveries.push_back(PrepItem {
-                        job_id: item.job_id,
-                        op_index: item.op_index,
-                        mill_id: item.mill_id,
-                    });
-                    eprintln!(
-                        "[INFO] [{now:.1}s] WORK-PREP: job {} ready for mill {}",
-                        job_id, mill_id
-                    );
-                    if let Some((next_item, next_gen)) = self.work_prep.try_start() {
-                        let prep_time = WORK_PREP_TIME_MIN
-                            + self.rng.gen::<f64>() * (WORK_PREP_TIME_MAX - WORK_PREP_TIME_MIN);
-                        out.push(TimedEvent {
-                            time: now + prep_time,
-                            event: Event::WorkPrepDone {
-                                job_id: next_item.job_id,
-                                op_index: next_item.op_index,
-                                mill_id: next_item.mill_id,
-                                gen: next_gen,
-                            },
-                        });
-                    }
-                }
-            }
-
-            Event::FaultOccur(target) => {
-                match target {
-                    FaultTarget::Mill(mid) => self.mills[*mid].fault(now),
-                    FaultTarget::Agv(aid) => self.agvs[*aid].fault(),
-                    FaultTarget::WorkPrep => self.work_prep.fault(now),
-                }
-                out.push(self.fault_inj.schedule_repair(now, target));
-            }
-            Event::FaultRepair(target) => {
-                match target {
-                    FaultTarget::Mill(mid) => {
-                        if let Some((pt, pid)) = self.mills[*mid].repair(now) {
-                            self.pallet_mag.return_pallet(pt, pid);
-                        }
-                    }
-                    FaultTarget::Agv(aid) => {
-                        let aid = *aid;
-                        let dest_mill = match &self.agvs[aid].cargo {
-                            Cargo::PrepPallet { mill_id, .. } => Some(*mill_id),
-                            Cargo::Workpiece { .. } => self.agvs[aid].path.last().and_then(|&d| {
-                                (d >= SPUR_BASE && d - SPUR_BASE < NUM_MILLS)
-                                    .then_some(d - SPUR_BASE)
-                            }),
-                            _ => None,
-                        };
-                        let chip_evac_mill = match &self.agvs[aid].cargo {
-                            Cargo::ChipBin(mid) => Some(*mid),
-                            _ => None,
-                        };
-                        if let Some(mid) = dest_mill {
-                            if self.mills[mid].state == MillState::Loading {
-                                if let (Some(pt), Some(pid)) = (
-                                    self.mills[mid].loaded_pallet_type.take(),
-                                    self.mills[mid].loaded_pallet.take(),
-                                ) {
-                                    self.pallet_mag.return_pallet(pt, pid);
-                                }
-                                self.mills[mid].current_job = None;
-                                self.mills[mid].current_op = 0;
-                                self.mills[mid].state = MillState::Idle;
-                            }
-                        }
-                        if let Some(mid) = chip_evac_mill {
-                            self.scheduler.clear_pending_chip_evac(mid);
-                        }
-                        self.agvs[aid].repair();
-                    }
-                    FaultTarget::WorkPrep => {
-                        self.work_prep.repair(now);
-                        if let Some((item, gen)) = self.work_prep.try_start() {
-                            let prep_time = WORK_PREP_TIME_MIN
-                                + self.rng.gen::<f64>() * (WORK_PREP_TIME_MAX - WORK_PREP_TIME_MIN);
-                            out.push(TimedEvent {
-                                time: now + prep_time,
-                                event: Event::WorkPrepDone {
-                                    job_id: item.job_id,
-                                    op_index: item.op_index,
-                                    mill_id: item.mill_id,
-                                    gen,
-                                },
-                            });
-                        }
-                    }
-                }
-                out.push(
-                    self.fault_inj
-                        .schedule_next_fault(&mut self.rng, now, target),
-                );
-            }
-
-            Event::SchedulerTick => {
-                self.metrics.sample_queue(self.scheduler.job_queue.len());
-                self.metrics
-                    .maybe_snapshot(now, &self.mills, &self.agvs, &self.scheduler);
-                let sched_events = self.scheduler.tick(
-                    now,
-                    &mut self.mills,
-                    &mut self.agvs,
-                    &mut self.tool_crib,
-                    &mut self.pallet_mag,
-                    &mut self.lanes,
-                    &self.work_prep,
-                );
-                out.extend(sched_events);
-            }
-
-            Event::ReconciliationTick => {
-                let drifts = self.reconciler.reconcile(
-                    &self.mills,
-                    &self.agvs,
-                    &self.tool_crib,
-                    &self.pallet_mag,
-                    &self.work_prep,
-                );
-                if !drifts.is_empty() {
-                    for d in &drifts {
-                        emit_json(&OutMessage::Event {
-                            time: now,
-                            kind: "drift",
-                            detail: serde_json::json!({
-                                "category": format!("{:?}", d.category),
-                                "description": d.description,
-                                "pass": self.reconciler.passes,
-                            }),
-                        });
-                    }
-                    eprintln!(
-                        "[INFO] [{now:.1}s] RECONCILIATION: pass {} found {} drift(s)",
-                        self.reconciler.passes,
-                        drifts.len()
-                    );
-                }
-                out.push(TimedEvent {
-                    time: now + RECONCILIATION_INTERVAL,
-                    event: Event::ReconciliationTick,
-                });
-            }
-        }
-        out
-    }
-
-    fn generate_job(&mut self, arrival: SimTime) -> Job {
-        let id = self.scheduler.next_id();
-        let priority = match self.rng.gen_range(0..100) {
-            0..=4 => Priority::Critical,
-            5..=19 => Priority::High,
-            20..=79 => Priority::Normal,
-            _ => Priority::Low,
-        };
-        let num_ops = self.rng.gen_range(1..=3);
-        let ops = (0..num_ops)
-            .map(|_| Operation {
-                tool_set: self.rng.gen_range(0..self.config.tool_types),
-                duration: 180.0 + self.rng.gen::<f64>() * 720.0,
-                pallet_type: self.rng.gen_range(0..self.config.pallet_types),
-            })
-            .collect();
-        Job {
-            id,
-            priority,
-            operations: ops,
-            arrived_at: arrival,
-        }
     }
 }
 
