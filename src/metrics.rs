@@ -7,6 +7,7 @@ use serde::Serialize;
 
 use crate::agv::Agv;
 use crate::factory::Mill;
+use crate::reconcile::Reconciler;
 use crate::scheduler::Scheduler;
 use crate::types::*;
 
@@ -48,6 +49,9 @@ pub struct Summary {
     pub back_pressure_events: u64,
     pub chip_evacuations: u64,
     pub work_prep_jobs: u64,
+    pub reconciliation_passes: u64,
+    pub reconciliation_drifts: u64,
+    pub max_drifts_in_pass: u64,
     pub mill_utilization: Vec<f64>,
     pub avg_utilization: f64,
     pub total_throughput: u64,
@@ -132,6 +136,7 @@ impl Metrics {
         mills: &[Mill],
         scheduler: &Scheduler,
         total_faults: u64,
+        reconciler: &Reconciler,
     ) -> Summary {
         let utilizations: Vec<f64> = mills
             .iter()
@@ -162,6 +167,9 @@ impl Metrics {
             back_pressure_events: scheduler.back_pressure_events,
             chip_evacuations: scheduler.chip_evacs_dispatched,
             work_prep_jobs: scheduler.work_prep_deliveries,
+            reconciliation_passes: reconciler.passes,
+            reconciliation_drifts: reconciler.total_drifts,
+            max_drifts_in_pass: reconciler.max_drifts_in_pass,
             mill_utilization: utilizations,
             avg_utilization: avg_util,
             total_throughput: total_parts,

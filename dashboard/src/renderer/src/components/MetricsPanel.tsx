@@ -40,6 +40,10 @@ export function MetricsPanel() {
         <MetricRow label="Back-pressure" value={String(m.back_pressure_events)} />
         <MetricRow label="Chip evacs" value={String(m.chip_evacuations)} />
         <MetricRow label="Work prep" value={`${m.work_prep_jobs} (Q:${m.work_prep_queue})`} />
+        <MetricRow
+          label="Reconciliation"
+          value={`${m.reconciliation_passes} passes, ${m.reconciliation_drifts} drifts`}
+        />
         <MetricRow label="Queue" value={String(snapshot.job_queue.depth)} />
         <MetricRow label="Deadlocks" value={String(m.deadlocks)} />
         <MetricRow label="Faults" value={String(m.faults)} />

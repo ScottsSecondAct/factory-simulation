@@ -49,6 +49,7 @@ pub const WORK_PREP_SEG: SegmentId = 15;
 pub const WORK_PREP_TIME_MIN: SimTime = 60.0;
 pub const WORK_PREP_TIME_MAX: SimTime = 120.0;
 pub const WORK_PREP_MAX_QUEUE: usize = 4;
+pub const RECONCILIATION_INTERVAL: SimTime = 30.0;
 
 // ── Mill state machine ──────────────────────────────────────────────
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

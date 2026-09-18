@@ -122,6 +122,9 @@ export interface MetricsSnap {
   work_prep_jobs: number;
   work_prep_queue: number;
   work_prep_state: WorkPrepState;
+  reconciliation_passes: number;
+  reconciliation_drifts: number;
+  max_drifts_in_pass: number;
 }
 
 export interface Snapshot {
@@ -165,6 +168,9 @@ export interface SummaryMessage {
   back_pressure_events: number;
   chip_evacuations: number;
   work_prep_jobs: number;
+  reconciliation_passes: number;
+  reconciliation_drifts: number;
+  max_drifts_in_pass: number;
   mill_utilization: number[];
   avg_utilization: number;
   avg_queue_depth: number;

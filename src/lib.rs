@@ -4,5 +4,6 @@ pub mod factory;
 pub mod fault;
 pub mod ipc;
 pub mod metrics;
+pub mod reconcile;
 pub mod scheduler;
 pub mod types;

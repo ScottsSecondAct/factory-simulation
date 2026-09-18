@@ -66,6 +66,9 @@ pub enum Event {
 
     // Scheduler heartbeat
     SchedulerTick,
+
+    // Reconciliation heartbeat
+    ReconciliationTick,
 }
 
 // ── Timed event wrapper ─────────────────────────────────────────────

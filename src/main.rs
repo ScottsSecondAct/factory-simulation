@@ -25,6 +25,7 @@ use factory_sim::factory::{Mill, PalletMagazine, PrepItem, ToolCrib, WorkPrepSta
 use factory_sim::fault::{FaultConfig, FaultInjector};
 use factory_sim::ipc::{IpcConfig, IpcRunner};
 use factory_sim::metrics::Metrics;
+use factory_sim::reconcile::Reconciler;
 use factory_sim::scheduler::Scheduler;
 use factory_sim::types::*;
 
@@ -38,6 +39,7 @@ struct World {
     scheduler: Scheduler,
     fault_inj: FaultInjector,
     work_prep: WorkPrepStation,
+    reconciler: Reconciler,
     metrics: Metrics,
     rng: StdRng,
 }
@@ -71,6 +73,7 @@ impl World {
             scheduler: Scheduler::new(),
             fault_inj: FaultInjector::new(fault_cfg),
             work_prep: WorkPrepStation::new(),
+            reconciler: Reconciler::new(),
             metrics: Metrics::new(60.0),
             rng: StdRng::seed_from_u64(42),
         }
@@ -335,6 +338,30 @@ impl World {
                 );
                 out.extend(sched_events);
             }
+
+            Event::ReconciliationTick => {
+                let drifts = self.reconciler.reconcile(
+                    &self.mills,
+                    &self.agvs,
+                    &self.tool_crib,
+                    &self.pallet_mag,
+                    &self.work_prep,
+                );
+                if !drifts.is_empty() {
+                    eprintln!(
+                        "[{now:.1}s] RECONCILIATION: pass {} found {} drift(s)",
+                        self.reconciler.passes,
+                        drifts.len()
+                    );
+                    for d in &drifts {
+                        eprintln!("  {:?}: {}", d.category, d.description);
+                    }
+                }
+                out.push(TimedEvent {
+                    time: now + RECONCILIATION_INTERVAL,
+                    event: Event::ReconciliationTick,
+                });
+            }
         }
 
         out
@@ -482,6 +509,7 @@ fn main() {
     engine.schedule(0.0, Event::SchedulerTick);
     let fault_events = world.fault_inj.seed_faults(&mut world.rng);
     engine.schedule_many(fault_events);
+    engine.schedule(0.0, Event::ReconciliationTick);
 
     eprintln!(
         "factory-sim: running {duration:.0}s simulation ({} mills, {} AGVs, {} AMRs)",
@@ -502,6 +530,7 @@ fn main() {
         &world.mills,
         &world.scheduler,
         world.fault_inj.total_faults,
+        &world.reconciler,
     );
 
     if snapshots_output {
@@ -536,6 +565,12 @@ fn main() {
         eprintln!("Back-pressure:      {}", summary.back_pressure_events);
         eprintln!("Chip evacuations:   {}", summary.chip_evacuations);
         eprintln!("Work prep jobs:     {}", summary.work_prep_jobs);
+        eprintln!(
+            "Reconciliation:     {} passes, {} drifts (max {} per pass)",
+            summary.reconciliation_passes,
+            summary.reconciliation_drifts,
+            summary.max_drifts_in_pass
+        );
         eprintln!("Equipment faults:   {}", summary.total_faults);
         eprintln!(
             "Throughput:         {:.1} parts/hr",

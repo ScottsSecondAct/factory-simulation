@@ -413,6 +413,7 @@ There is **no real-time clock**. Simulated time advances discretely from event t
 | `AgvUnloadDone` | 45s after arriving at mill spur | Cargo delivered, AGV becomes Idle |
 | `ChipEvacDone` | 60s after AGV arrives at chip-full mill | Mill chip bin emptied, mill returns to Idle |
 | `WorkPrepDone` | 60–120s after processing starts | Prepared workpiece queued for mill delivery |
+| `ReconciliationTick` | Every 30s | Compares cached belief against ground truth, logs drifts |
 | `FaultOccur` | Exp(MTBF) | Equipment faults; repair scheduled |
 | `FaultRepair` | Fixed duration after fault | Equipment restored; next fault scheduled |
 
@@ -532,6 +533,8 @@ Avg queue depth:    3.2
 Deadlocks detected: 4
 Back-pressure:      12
 Chip evacuations:   8
+Work prep jobs:     45
+Reconciliation:     960 passes, 3214 drifts (max 12 per pass)
 Equipment faults:   37
 Throughput:         6.4 parts/hr
 ```
@@ -550,6 +553,10 @@ With `--json`, the summary is emitted as structured JSON to stdout:
   "total_faults": 37,
   "back_pressure_events": 12,
   "chip_evacuations": 8,
+  "work_prep_jobs": 45,
+  "reconciliation_passes": 960,
+  "reconciliation_drifts": 3214,
+  "max_drifts_in_pass": 12,
   "mill_utilization": [0.28, 0.31, ...],
   "avg_utilization": 0.248,
   "total_throughput": 832,
@@ -615,6 +622,7 @@ Displays key performance indicators updated in real time:
 - Back-pressure events (how many times dispatch was held due to WIP limit)
 - Chip evacuations (total chip bin evacuations dispatched)
 - Work prep jobs (billets processed by the work prep station, with current queue depth)
+- Reconciliation (total passes and total drifts detected)
 
 Each utilization metric includes a visual bar indicator.
 
@@ -722,6 +730,7 @@ Discrete events of interest (faults, repairs, completions).
 {"type": "event", "time": 6031.5, "kind": "repair", "detail": {"target": {"Mill": 17}}}
 {"type": "event", "time": 1500.0, "kind": "completion", "detail": {"mill_id": 3, "job_id": 22}}
 {"type": "event", "time": 2870.0, "kind": "chip_evac", "detail": {"mill_id": 0}}
+{"type": "event", "time": 30.0, "kind": "drift", "detail": {"category": "AgvPosition", "description": "Vehicle 0: believed seg 0, actual seg 18", "pass": 2}}
 ```
 
 #### `summary`
@@ -774,7 +783,20 @@ Number of scheduler ticks where dispatch was held because WIP had reached the `m
 
 Total number of chip evacuation missions dispatched. Each evacuation ties up an AGV for the transit time to the mill spur plus 60 seconds of evacuation, competing directly with production dispatch. Frequent evacuations indicate mills are machining at high rates; zero evacuations mean chip bins never reached capacity (short simulation or low throughput).
 
-### 12.8 WIP (Work in Progress)
+### 12.8 Reconciliation
+
+The reconciliation subsystem simulates a real factory controller's periodic state check. Every 30 seconds of simulation time, the reconciler compares its cached belief of the factory state against the actual ground truth. Discrepancies — called "drifts" — indicate that events changed the factory between reconciliation ticks without the cache being updated. This is the same pattern used in distributed factory control systems to detect sensor lag, missed messages, and partial failures.
+
+Drifts are categorized into five types:
+- **MillState** — a mill's state changed (e.g., from Idle to Machining) since the last snapshot.
+- **AgvPosition** — a vehicle moved to a different lane segment.
+- **ToolInventory** — the tool crib's available count for a tool set changed.
+- **PalletInventory** — the pallet magazine's available count for a fixture type changed.
+- **WorkPrepState** — the work preparation station's state changed.
+
+The summary reports three reconciliation metrics: total passes (one per 30s tick), total drifts across all passes, and the maximum number of drifts found in any single pass. A high drift count is normal in an active factory — it confirms events are occurring between checks. Anomalously high max-drifts-per-pass may indicate a burst of simultaneous state changes (e.g., a cascade of faults).
+
+### 12.9 WIP (Work in Progress)
 
 The current count of mills actively processing work (any state other than Idle, Faulted, or ChipFull). Displayed in the dashboard as `current/max`. When WIP equals `max_wip`, the scheduler enters back-pressure mode and holds further dispatch until a mill finishes and returns to Idle. ChipFull mills are excluded from WIP to prevent chip-full conditions from artificially triggering back-pressure.
 
@@ -795,7 +817,9 @@ The current count of mills actively processing work (any state other than Idle, 
 | **FMS** | Flexible Manufacturing System — a production system with CNC machines, automated material handling, and computer-controlled scheduling. |
 | **FSM** | Finite State Machine — a model with a fixed set of states and defined transitions between them. |
 | **MTBF** | Mean Time Between Failures — the expected time a piece of equipment runs before its next failure, drawn from an exponential distribution. |
+| **Drift** | A discrepancy between the reconciler's cached belief of factory state and the actual ground truth. Categorized by type: MillState, AgvPosition, ToolInventory, PalletInventory, WorkPrepState. |
 | **Pallet** | A workholding fixture that secures a workpiece in the mill. Typed by the part geometry it accommodates. |
+| **Reconciliation** | A periodic (every 30s) state check that compares the scheduler's cached belief against actual equipment state, logging any discrepancies as drift events. |
 | **Segment** | One atomic unit of the lane network. Holds at most one AGV (mutual exclusion). |
 | **Spur** | A dedicated lane segment branching from the main loop to a single mill. |
 | **Tool set** | A logical group of cutting tools (e.g., end mill, drill, chamfer) identified by type ID. |

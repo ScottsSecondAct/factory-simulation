@@ -19,6 +19,7 @@ use crate::engine::{Event, SimEngine, TimedEvent};
 use crate::factory::{Mill, PalletMagazine, PrepItem, ToolCrib, WorkPrepStation};
 use crate::fault::{FaultConfig, FaultInjector};
 use crate::metrics::Metrics;
+use crate::reconcile::Reconciler;
 use crate::scheduler::Scheduler;
 use crate::types::*;
 
@@ -167,6 +168,9 @@ pub struct MetricsSnap {
     pub work_prep_jobs: u64,
     pub work_prep_queue: usize,
     pub work_prep_state: WorkPrepState,
+    pub reconciliation_passes: u64,
+    pub reconciliation_drifts: u64,
+    pub max_drifts_in_pass: u64,
 }
 
 #[derive(Serialize)]
@@ -180,6 +184,9 @@ pub struct SummaryMsg {
     pub back_pressure_events: u64,
     pub chip_evacuations: u64,
     pub work_prep_jobs: u64,
+    pub reconciliation_passes: u64,
+    pub reconciliation_drifts: u64,
+    pub max_drifts_in_pass: u64,
     pub mill_utilization: Vec<f64>,
     pub avg_utilization: f64,
     pub avg_queue_depth: f64,
@@ -237,6 +244,7 @@ pub struct IpcRunner {
     scheduler: Scheduler,
     fault_inj: FaultInjector,
     work_prep: WorkPrepStation,
+    reconciler: Reconciler,
     metrics: Metrics,
     engine: SimEngine,
     rng: StdRng,
@@ -307,6 +315,7 @@ impl IpcRunner {
             scheduler,
             fault_inj,
             work_prep: WorkPrepStation::new(),
+            reconciler: Reconciler::new(),
             metrics,
             engine,
             rng,
@@ -346,6 +355,7 @@ impl IpcRunner {
         self.engine.schedule(0.0, Event::SchedulerTick);
         let fault_events = self.fault_inj.seed_faults(&mut self.rng);
         self.engine.schedule_many(fault_events);
+        self.engine.schedule(0.0, Event::ReconciliationTick);
     }
 
     fn drain_commands(&mut self) {
@@ -567,6 +577,9 @@ impl IpcRunner {
                 work_prep_jobs: self.work_prep.jobs_completed,
                 work_prep_queue: self.work_prep.total_items(),
                 work_prep_state: self.work_prep.state.clone(),
+                reconciliation_passes: self.reconciler.passes,
+                reconciliation_drifts: self.reconciler.total_drifts,
+                max_drifts_in_pass: self.reconciler.max_drifts_in_pass,
             },
         };
 
@@ -678,6 +691,9 @@ impl IpcRunner {
             back_pressure_events: self.scheduler.back_pressure_events,
             chip_evacuations: self.scheduler.chip_evacs_dispatched,
             work_prep_jobs: self.work_prep.jobs_completed,
+            reconciliation_passes: self.reconciler.passes,
+            reconciliation_drifts: self.reconciler.total_drifts,
+            max_drifts_in_pass: self.reconciler.max_drifts_in_pass,
             mill_utilization: utilizations,
             avg_utilization: avg_util,
             avg_queue_depth: 0.0,
@@ -924,6 +940,38 @@ impl IpcRunner {
                     &self.work_prep,
                 );
                 out.extend(sched_events);
+            }
+
+            Event::ReconciliationTick => {
+                let drifts = self.reconciler.reconcile(
+                    &self.mills,
+                    &self.agvs,
+                    &self.tool_crib,
+                    &self.pallet_mag,
+                    &self.work_prep,
+                );
+                if !drifts.is_empty() {
+                    for d in &drifts {
+                        emit_json(&OutMessage::Event {
+                            time: now,
+                            kind: "drift",
+                            detail: serde_json::json!({
+                                "category": format!("{:?}", d.category),
+                                "description": d.description,
+                                "pass": self.reconciler.passes,
+                            }),
+                        });
+                    }
+                    eprintln!(
+                        "[INFO] [{now:.1}s] RECONCILIATION: pass {} found {} drift(s)",
+                        self.reconciler.passes,
+                        drifts.len()
+                    );
+                }
+                out.push(TimedEvent {
+                    time: now + RECONCILIATION_INTERVAL,
+                    event: Event::ReconciliationTick,
+                });
             }
         }
         out
