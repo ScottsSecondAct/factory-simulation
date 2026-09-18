@@ -105,13 +105,15 @@ impl World {
                             mill_id: *mid,
                             job_id: jid,
                             op_index: op_idx,
+                            duration,
                         },
                     });
                 }
             }
-            Event::MillMachiningDone { mill_id, .. } => {
-                self.mills[*mill_id].finish_machining(300.0);
-                self.mills[*mill_id].state = MillState::Unloading;
+            Event::MillMachiningDone {
+                mill_id, duration, ..
+            } => {
+                self.mills[*mill_id].finish_machining(*duration);
                 out.push(TimedEvent {
                     time: now + MILL_UNLOAD_TIME,
                     event: Event::MillUnloadDone(*mill_id),
@@ -158,19 +160,28 @@ impl World {
                 self.agvs[*agv_id].loads_delivered += 1;
             }
             Event::AgvUnloadDone { agv_id } => {
-                if let Cargo::Workpiece { job_id, op_index } = &self.agvs[*agv_id].cargo {
-                    let seg = self.agvs[*agv_id].segment;
-                    if seg >= SPUR_BASE {
-                        let mid = seg - SPUR_BASE;
-                        if mid < NUM_MILLS {
-                            self.mills[mid].current_job = Some(*job_id);
-                            self.mills[mid].current_op = *op_index;
-                            out.push(TimedEvent {
-                                time: now + MILL_LOAD_TIME,
-                                event: Event::MillLoadDone(mid),
-                            });
+                match &self.agvs[*agv_id].cargo {
+                    Cargo::Workpiece { job_id, op_index } => {
+                        let seg = self.agvs[*agv_id].segment;
+                        if seg >= SPUR_BASE {
+                            let mid = seg - SPUR_BASE;
+                            if mid < NUM_MILLS {
+                                self.mills[mid].current_job = Some(*job_id);
+                                self.mills[mid].current_op = *op_index;
+                                out.push(TimedEvent {
+                                    time: now + MILL_LOAD_TIME,
+                                    event: Event::MillLoadDone(mid),
+                                });
+                            }
                         }
                     }
+                    Cargo::ChipBin(mid) => {
+                        out.push(TimedEvent {
+                            time: now + CHIP_EVAC_TIME,
+                            event: Event::ChipEvacDone(*mid),
+                        });
+                    }
+                    _ => {}
                 }
                 self.agvs[*agv_id].cargo = Cargo::Empty;
                 self.agvs[*agv_id].state = AgvState::Idle;
@@ -178,6 +189,12 @@ impl World {
             }
 
             Event::ToolIssued { .. } | Event::PalletIssued { .. } => {}
+
+            Event::ChipEvacDone(mid) => {
+                self.mills[*mid].finish_chip_evac();
+                self.scheduler.clear_pending_chip_evac(*mid);
+                eprintln!("[{now:.1}s] CHIP-EVAC: mill {mid} chips cleared");
+            }
 
             Event::FaultOccur(target) => {
                 match target {
@@ -432,6 +449,7 @@ fn main() {
         eprintln!("Avg queue depth:    {:.1}", summary.avg_queue_depth);
         eprintln!("Deadlocks detected: {}", summary.deadlocks_detected);
         eprintln!("Back-pressure:      {}", summary.back_pressure_events);
+        eprintln!("Chip evacuations:   {}", summary.chip_evacuations);
         eprintln!("Equipment faults:   {}", summary.total_faults);
         eprintln!(
             "Throughput:         {:.1} parts/hr",

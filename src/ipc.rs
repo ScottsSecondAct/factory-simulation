@@ -82,6 +82,7 @@ pub struct MillLayout {
 pub struct StationLayout {
     pub tool_crib: SegmentId,
     pub pallet_magazine: SegmentId,
+    pub chip_station: SegmentId,
 }
 
 #[derive(Serialize)]
@@ -108,6 +109,8 @@ pub struct MillSnap {
     pub parts_completed: u64,
     pub busy_time: SimTime,
     pub fault_time: SimTime,
+    pub chip_level: f64,
+    pub chip_capacity: f64,
 }
 
 #[derive(Serialize)]
@@ -159,6 +162,7 @@ pub struct MetricsSnap {
     pub wip: usize,
     pub max_wip: usize,
     pub back_pressure_events: u64,
+    pub chip_evacuations: u64,
 }
 
 #[derive(Serialize)]
@@ -170,6 +174,7 @@ pub struct SummaryMsg {
     pub deadlocks_detected: u64,
     pub total_faults: u64,
     pub back_pressure_events: u64,
+    pub chip_evacuations: u64,
     pub mill_utilization: Vec<f64>,
     pub avg_utilization: f64,
     pub avg_queue_depth: f64,
@@ -445,6 +450,7 @@ impl IpcRunner {
                 stations: StationLayout {
                     tool_crib: TOOL_CRIB_SEG,
                     pallet_magazine: PALLET_MAG_SEG,
+                    chip_station: CHIP_STATION_SEG,
                 },
             },
         };
@@ -481,6 +487,8 @@ impl IpcRunner {
                 parts_completed: m.parts_completed,
                 busy_time: m.busy_time,
                 fault_time: m.fault_time,
+                chip_level: m.chip_level,
+                chip_capacity: m.chip_capacity,
             })
             .collect();
 
@@ -547,6 +555,7 @@ impl IpcRunner {
                 wip: Scheduler::wip_count(&self.mills),
                 max_wip: self.scheduler.max_wip,
                 back_pressure_events: self.scheduler.back_pressure_events,
+                chip_evacuations: self.scheduler.chip_evacs_dispatched,
             },
         };
 
@@ -612,6 +621,13 @@ impl IpcRunner {
                     }),
                 });
             }
+            Event::ChipEvacDone(mid) => {
+                emit_json(&OutMessage::Event {
+                    time: now,
+                    kind: "chip_evac",
+                    detail: serde_json::json!({ "mill_id": mid }),
+                });
+            }
             _ => {}
         }
     }
@@ -634,6 +650,7 @@ impl IpcRunner {
             deadlocks_detected: self.scheduler.deadlocks_detected,
             total_faults: self.fault_inj.total_faults,
             back_pressure_events: self.scheduler.back_pressure_events,
+            chip_evacuations: self.scheduler.chip_evacs_dispatched,
             mill_utilization: utilizations,
             avg_utilization: avg_util,
             avg_queue_depth: 0.0,
@@ -680,13 +697,15 @@ impl IpcRunner {
                             mill_id: *mid,
                             job_id: jid,
                             op_index: op_idx,
+                            duration,
                         },
                     });
                 }
             }
-            Event::MillMachiningDone { mill_id, .. } => {
-                self.mills[*mill_id].finish_machining(300.0);
-                self.mills[*mill_id].state = MillState::Unloading;
+            Event::MillMachiningDone {
+                mill_id, duration, ..
+            } => {
+                self.mills[*mill_id].finish_machining(*duration);
                 out.push(TimedEvent {
                     time: now + MILL_UNLOAD_TIME,
                     event: Event::MillUnloadDone(*mill_id),
@@ -733,19 +752,28 @@ impl IpcRunner {
                 self.agvs[*agv_id].loads_delivered += 1;
             }
             Event::AgvUnloadDone { agv_id } => {
-                if let Cargo::Workpiece { job_id, op_index } = &self.agvs[*agv_id].cargo {
-                    let seg = self.agvs[*agv_id].segment;
-                    if seg >= SPUR_BASE {
-                        let mid = seg - SPUR_BASE;
-                        if mid < NUM_MILLS {
-                            self.mills[mid].current_job = Some(*job_id);
-                            self.mills[mid].current_op = *op_index;
-                            out.push(TimedEvent {
-                                time: now + MILL_LOAD_TIME,
-                                event: Event::MillLoadDone(mid),
-                            });
+                match &self.agvs[*agv_id].cargo {
+                    Cargo::Workpiece { job_id, op_index } => {
+                        let seg = self.agvs[*agv_id].segment;
+                        if seg >= SPUR_BASE {
+                            let mid = seg - SPUR_BASE;
+                            if mid < NUM_MILLS {
+                                self.mills[mid].current_job = Some(*job_id);
+                                self.mills[mid].current_op = *op_index;
+                                out.push(TimedEvent {
+                                    time: now + MILL_LOAD_TIME,
+                                    event: Event::MillLoadDone(mid),
+                                });
+                            }
                         }
                     }
+                    Cargo::ChipBin(mid) => {
+                        out.push(TimedEvent {
+                            time: now + CHIP_EVAC_TIME,
+                            event: Event::ChipEvacDone(*mid),
+                        });
+                    }
+                    _ => {}
                 }
                 self.agvs[*agv_id].cargo = Cargo::Empty;
                 self.agvs[*agv_id].state = AgvState::Idle;
@@ -753,6 +781,11 @@ impl IpcRunner {
             }
 
             Event::ToolIssued { .. } | Event::PalletIssued { .. } => {}
+
+            Event::ChipEvacDone(mid) => {
+                self.mills[*mid].finish_chip_evac();
+                self.scheduler.clear_pending_chip_evac(*mid);
+            }
 
             Event::FaultOccur(target) => {
                 match target {

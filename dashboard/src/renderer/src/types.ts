@@ -14,7 +14,8 @@ export type MillState =
   | "Machining"
   | "Unloading"
   | "ToolChange"
-  | "Faulted";
+  | "Faulted"
+  | "ChipFull";
 
 export type AgvState =
   | "Idle"
@@ -55,7 +56,7 @@ export interface MillLayout {
 
 export interface FactoryLayout {
   mills: MillLayout[];
-  stations: { tool_crib: SegmentId; pallet_magazine: SegmentId };
+  stations: { tool_crib: SegmentId; pallet_magazine: SegmentId; chip_station: SegmentId };
 }
 
 export interface MillSnap {
@@ -68,6 +69,8 @@ export interface MillSnap {
   parts_completed: number;
   busy_time: SimTime;
   fault_time: SimTime;
+  chip_level: number;
+  chip_capacity: number;
 }
 
 export interface AgvSnap {
@@ -113,6 +116,7 @@ export interface MetricsSnap {
   wip: number;
   max_wip: number;
   back_pressure_events: number;
+  chip_evacuations: number;
 }
 
 export interface Snapshot {
@@ -154,6 +158,7 @@ export interface SummaryMessage {
   deadlocks_detected: number;
   total_faults: number;
   back_pressure_events: number;
+  chip_evacuations: number;
   mill_utilization: number[];
   avg_utilization: number;
   avg_queue_depth: number;

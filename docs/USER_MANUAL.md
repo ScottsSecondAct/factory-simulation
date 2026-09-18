@@ -41,6 +41,7 @@ AGVs travel on a **20-segment bidirectional loop** that encircles the factory fl
 
 Key fixed stations on the loop:
 - **Segment 0**: Tool Crib — where tool sets are issued and returned.
+- **Segment 5**: Chip Station — waste station where chip bins are emptied during chip evacuation.
 - **Segment 10**: Pallet Magazine — where pallet fixtures are dispensed and returned.
 
 Mill rows attach to the loop at specific segments:
@@ -88,7 +89,7 @@ Each lane segment holds **at most one vehicle** at any time. This is the fundame
 
 ### 3.1 CNC Mill
 
-Each mill is modeled as a **finite state machine** with 8 states:
+Each mill is modeled as a **finite state machine** with 9 states:
 
 | State | Description |
 |---|---|
@@ -96,10 +97,11 @@ Each mill is modeled as a **finite state machine** with 8 states:
 | **WaitingPallet** | Job assigned, waiting for a pallet fixture to be delivered. |
 | **WaitingTool** | Job assigned, waiting for a tool set to be delivered. |
 | **Loading** | Workpiece is being loaded onto the pallet fixture in the mill. Duration: **45 seconds**. |
-| **Machining** | Actively cutting the workpiece. Duration: **300–900 seconds** (random, per operation). |
+| **Machining** | Actively cutting the workpiece. Duration: **300–900 seconds** (random, per operation). Chips accumulate in the chip bin during this state. |
 | **Unloading** | Finished part is being removed from the mill. Duration: **45 seconds**. |
 | **ToolChange** | Swapping the current tool set for a different one. Duration: **120 seconds**. |
 | **Faulted** | Machine has experienced a breakdown. No work is processed until repair completes. |
+| **ChipFull** | Chip bin has reached capacity. Mill is paused until an AGV evacuates the chips. |
 
 **Tracked metrics per mill:**
 - `parts_completed` — cumulative count of finished parts
@@ -108,16 +110,20 @@ Each mill is modeled as a **finite state machine** with 8 states:
 - `loaded_tool` — which tool set (if any) is currently installed
 - `loaded_pallet` — which pallet fixture (if any) is currently mounted
 - `loaded_pallet_type` — the fixture type of the loaded pallet (0–3)
+- `chip_level` — current chip bin fill level (0.0–100.0)
+- `chip_capacity` — chip bin capacity (default: 100.0)
 
 **Mill state transitions:**
 
 ```
 Idle → Loading → Machining → Unloading → Idle
-  \                                       ↑
-   → ToolChange → Idle                    |
+  \                                  \     ↑
+   → ToolChange → Idle                → ChipFull → Idle (after evacuation)
                                           |
 Any state → Faulted → Idle (on repair) ───┘
 ```
+
+When a part finishes unloading, the mill checks its chip bin level. If the bin is at or above capacity, the mill transitions to **ChipFull** instead of **Idle**. The scheduler dispatches an AGV to evacuate the chips. After a 60-second evacuation time, the mill's chip bin is emptied and it returns to **Idle**.
 
 ### 3.2 Vehicle Fleet (AGVs and AMRs)
 
@@ -149,6 +155,7 @@ AMRs are faster and more reliable, but because they cannot enter spur segments, 
 - `Pallet(id)` — carrying a specific pallet fixture
 - `ToolSet(id)` — carrying a specific tool set
 - `Workpiece { job_id, op_index }` — carrying a workpiece for a specific job and operation
+- `ChipBin(mill_id)` — carrying a chip bin from a specific mill for evacuation
 
 **Initial positions:** AGVs start distributed around the loop at segments 0, 3, 6, 9, 12, and 15 (computed as `(id × 3) % 20`). AMRs are placed at offset positions to avoid collisions (computed as `((NUM_AGVS + i) × 3 + 1) % 20`).
 
@@ -205,7 +212,7 @@ The queue is maintained in **priority order** (stable within the same priority l
 
 ## 4. Scheduling Engine
 
-The scheduler runs on a **5-second periodic heartbeat** (`SchedulerTick`). Each tick executes four phases in order:
+The scheduler runs on a **5-second periodic heartbeat** (`SchedulerTick`). Each tick executes six phases in order:
 
 ### 4.1 Phase 1: Job Dispatch
 
@@ -222,17 +229,31 @@ For each job:
 
 Multiple jobs can be dispatched in a single tick if resources and vehicles are available.
 
-### 4.2 Phase 2: Blocked Vehicle Advancement
+### 4.2 Phase 2: Chip Evacuation Dispatch
+
+The scheduler scans all mills in the **ChipFull** state and dispatches an available AGV to each one. Only AGVs are dispatched for chip evacuation because the mission requires entering the mill's spur segment (AMRs are restricted to the main loop).
+
+For each ChipFull mill without a pending evacuation:
+1. Find an idle AGV that can enter spurs.
+2. Compute the shortest path to the mill's spur segment.
+3. Dispatch the AGV with `ChipBin(mill_id)` cargo.
+4. Track the mill as having a pending evacuation (prevents duplicate dispatches).
+
+When the AGV arrives at the spur and unloads, a **60-second chip evacuation timer** begins. On completion, the mill's chip bin is emptied (chip level reset to 0) and the mill returns to **Idle**.
+
+Chip evacuation competes directly with production dispatch for AGV availability: an AGV servicing a chip-full mill is unavailable for workpiece delivery. This creates the scheduling tension that makes chip management a meaningful system concern.
+
+### 4.3 Phase 3: Blocked Vehicle Advancement
 
 The scheduler first runs **idle-vehicle yielding**: for each blocked vehicle, if the segment it needs is held by an idle vehicle, the idle vehicle is moved to the nearest free loop segment (found via BFS). This prevents permanently parked AMRs or idle AGVs from creating impassable bottlenecks.
 
 After yielding, the scheduler checks all blocked vehicles and attempts to advance them. If the segment a vehicle is waiting for has become free, the vehicle claims it, releases its previous segment, and continues traveling.
 
-### 4.3 Phase 3: Look-Ahead Pre-Staging
+### 4.4 Phase 4: Look-Ahead Pre-Staging
 
 The scheduler examines the next 8 jobs in the queue and checks whether their required tool sets are available. In a production system, this would trigger pre-staging of tools to shadow positions. In the current implementation, it validates scheduling feasibility.
 
-### 4.4 Phase 4: Deadlock Detection and Resolution
+### 4.5 Phase 5: Deadlock Detection and Resolution
 
 The scheduler builds a **wait-for graph** from all currently blocked AGVs:
 - For each blocked AGV, determine which segment it wants.
@@ -272,9 +293,49 @@ Faults can be disabled entirely with the `--no-faults` CLI flag for deterministi
 
 ---
 
-## 6. Simulation Engine
+## 6. Chip Evacuation
 
-### 6.1 Architecture
+### 6.1 Overview
+
+CNC machining generates metal chips (swarf) that accumulate in each mill's chip bin during the Machining state. When a bin reaches capacity, the mill cannot accept new work until the chips are evacuated by a vehicle. This creates a **competing resource flow**: chip evacuation missions contend with production workpiece deliveries for the same pool of AGVs.
+
+### 6.2 Chip Accumulation
+
+Each mill has a chip bin with a capacity of **100 units** (configurable via `chip_capacity`). Chips accumulate at a rate of **0.05 units per second** of machining time. A typical machining operation (300–900 seconds) adds 15–45 units of chips. The bin fills after approximately 3–4 consecutive operations, depending on duration.
+
+The chip level check occurs after the unloading phase completes. If `chip_level ≥ chip_capacity`, the mill transitions to **ChipFull** instead of **Idle**. This means the current part is successfully completed and counted before the mill pauses.
+
+### 6.3 Evacuation Process
+
+1. The scheduler detects a mill in ChipFull state during Phase 2 (Chip Evacuation Dispatch).
+2. An idle AGV is dispatched to the mill's spur with `ChipBin(mill_id)` cargo.
+3. The AGV travels to the spur (standard segment-by-segment movement, subject to lane contention).
+4. On arrival, a **60-second evacuation timer** begins (`CHIP_EVAC_TIME`).
+5. On completion (`ChipEvacDone`), the mill's chip level resets to 0.0 and the mill returns to **Idle**.
+
+### 6.4 Chip Station
+
+The **chip station** (waste disposal point) is located at **loop segment 5**, positioned between the tool crib (segment 0) and the pallet magazine (segment 10). While the current model completes evacuation at the mill spur (the AGV's presence at the spur represents the full service cycle), the chip station is part of the factory layout for future extensions.
+
+### 6.5 Scheduling Priority
+
+Chip evacuation has **lower priority than production dispatch** (Phase 1) but **higher priority than traffic management** (Phase 3). This ordering means:
+- Production jobs are dispatched first, using available vehicles.
+- Remaining idle vehicles are then assigned to chip evacuation.
+- A chip-full mill blocks until an AGV becomes available — extended high utilization can delay evacuation.
+
+Mills in ChipFull state are **excluded from the WIP count** (like Faulted mills), so they do not trigger back-pressure. This prevents chip-full mills from artificially inflating WIP and blocking dispatch of new work to healthy mills.
+
+### 6.6 Dashboard Indicators
+
+- **Mill grid**: Each mill displays a small chip level bar at the bottom. The bar fills from left to right as chips accumulate (gray when below capacity, amber when full). Mills in ChipFull state have an amber border.
+- **Metrics panel**: The "Chip evacs" counter shows the total number of chip evacuations dispatched.
+
+---
+
+## 7. Simulation Engine
+
+### 7.1 Architecture
 
 The simulation is driven by a **min-heap priority queue** of `TimedEvent`s. The engine:
 
@@ -287,12 +348,12 @@ The simulation is driven by a **min-heap priority queue** of `TimedEvent`s. The 
 
 There is **no real-time clock**. Simulated time advances discretely from event to event. If no events occur between t=100 and t=500, the clock jumps directly — no computation is wasted on empty intervals.
 
-### 6.2 Event Types
+### 7.2 Event Types
 
 | Event | Trigger | Effect |
 |---|---|---|
 | `JobArrival` | Poisson process | Enqueues a new job; schedules the next arrival |
-| `SchedulerTick` | Every 5s | Runs all 4 scheduling phases |
+| `SchedulerTick` | Every 5s | Runs all 6 scheduling phases |
 | `MillLoadDone` | 45s after loading begins | Mill transitions to Machining |
 | `MillMachiningDone` | 300–900s after machining begins | Mill transitions to Unloading |
 | `MillUnloadDone` | 45s after unloading begins | Pallet returned, mill becomes Idle |
@@ -300,16 +361,17 @@ There is **no real-time clock**. Simulated time advances discretely from event t
 | `AgvArrived` | 8s (AGV) or 6s (AMR) per segment hop | Vehicle enters next segment (or blocks) |
 | `AgvLoadDone` | After pickup | AGV begins traveling with cargo |
 | `AgvUnloadDone` | 45s after arriving at mill spur | Cargo delivered, AGV becomes Idle |
+| `ChipEvacDone` | 60s after AGV arrives at chip-full mill | Mill chip bin emptied, mill returns to Idle |
 | `FaultOccur` | Exp(MTBF) | Equipment faults; repair scheduled |
 | `FaultRepair` | Fixed duration after fault | Equipment restored; next fault scheduled |
 
-### 6.3 Reproducibility
+### 7.3 Reproducibility
 
 The simulation uses a seeded pseudorandom number generator (`StdRng` with seed 42 by default). Given the same seed and parameters, a run produces identical results. Use `--seed N` to change the seed for different stochastic realizations.
 
 ---
 
-## 7. Assumptions and Simplifications
+## 8. Assumptions and Simplifications
 
 Understanding the simulator's assumptions is important for interpreting its results correctly:
 
@@ -337,14 +399,14 @@ Understanding the simulator's assumptions is important for interpreting its resu
 
 ---
 
-## 8. Running the Simulation
+## 9. Running the Simulation
 
-### 8.1 Prerequisites
+### 9.1 Prerequisites
 
 - **Rust toolchain** (stable, 2021 edition) — install via [rustup.rs](https://rustup.rs/)
 - **Node.js 18+** and npm — required for the Electron dashboard
 
-### 8.2 Building
+### 9.2 Building
 
 ```bash
 # Build the Rust simulation binary
@@ -355,7 +417,7 @@ cd dashboard
 npm install
 ```
 
-### 8.3 Batch Mode (CLI)
+### 9.3 Batch Mode (CLI)
 
 Run the simulation headless and view results in the terminal:
 
@@ -379,7 +441,7 @@ cargo run --release -- --duration 14400 --mill-mtbf 14400 --agv-mtbf 21600 --see
 cargo run --release -- --duration 28800 --max-wip 15 --num-amrs 4
 ```
 
-### 8.4 CLI Flags Reference
+### 9.4 CLI Flags Reference
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
@@ -395,7 +457,7 @@ cargo run --release -- --duration 28800 --max-wip 15 --num-amrs 4
 | `--max-wip` | integer | 20 | Maximum work-in-progress before back-pressure holds dispatch |
 | `--num-amrs` | integer | 2 | Number of AMRs in the fleet (in addition to the 6 AGVs) |
 
-### 8.5 Batch Output
+### 9.5 Batch Output
 
 In default mode, the simulation prints diagnostic events (faults, repairs, deadlocks) to **stderr** during the run, followed by a summary:
 
@@ -418,11 +480,12 @@ Avg utilization:    24.8%
 Avg queue depth:    3.2
 Deadlocks detected: 4
 Back-pressure:      12
+Chip evacuations:   8
 Equipment faults:   37
 Throughput:         6.4 parts/hr
 ```
 
-### 8.6 JSON Output
+### 9.6 JSON Output
 
 With `--json`, the summary is emitted as structured JSON to stdout:
 
@@ -435,6 +498,7 @@ With `--json`, the summary is emitted as structured JSON to stdout:
   "deadlocks_detected": 4,
   "total_faults": 37,
   "back_pressure_events": 12,
+  "chip_evacuations": 8,
   "mill_utilization": [0.28, 0.31, ...],
   "avg_utilization": 0.248,
   "total_throughput": 832,
@@ -444,9 +508,9 @@ With `--json`, the summary is emitted as structured JSON to stdout:
 
 ---
 
-## 9. Electron Dashboard
+## 10. Electron Dashboard
 
-### 9.1 Starting the Dashboard
+### 10.1 Starting the Dashboard
 
 ```bash
 cd dashboard
@@ -455,7 +519,7 @@ npm run dev
 
 The dashboard launches an Electron window and automatically spawns the Rust simulation binary in IPC mode. It expects the release binary to be built first (`cargo build --release`).
 
-### 9.2 Control Bar
+### 10.2 Control Bar
 
 The top bar provides transport controls:
 
@@ -468,7 +532,7 @@ The top bar provides transport controls:
 - **Clock display** — Shows the current simulated time as HH:MM:SS.
 - **Config summary** — Displays duration, seed, and fault status.
 
-### 9.3 Factory Floor (SVG)
+### 10.3 Factory Floor (SVG)
 
 The main visualization is an SVG rendering of the factory floor showing:
 
@@ -477,11 +541,13 @@ The main visualization is an SVG rendering of the factory floor showing:
   - Machining/Loading/Unloading: green (active)
   - ToolChange: yellow
   - Faulted: red
+  - ChipFull: amber (with amber border)
   - WaitingPallet/WaitingTool: orange
+  - Each mill displays a chip level bar at the bottom (gray fill, amber when full)
 - **Lane network** — The 20-segment loop and 25 spur segments drawn as lines
 - **Vehicle positions** — AGVs shown as cyan circles labeled by ID number; AMRs shown as purple diamonds labeled "M". Each vehicle displays a projected path polyline showing its planned route. Faulted vehicles pulse red.
 
-### 9.4 Metrics Panel
+### 10.4 Metrics Panel
 
 Displays key performance indicators updated in real time:
 
@@ -496,17 +562,18 @@ Displays key performance indicators updated in real time:
 - Active mills (currently machining/loading/unloading)
 - WIP (current work-in-progress count / max WIP limit)
 - Back-pressure events (how many times dispatch was held due to WIP limit)
+- Chip evacuations (total chip bin evacuations dispatched)
 
 Each utilization metric includes a visual bar indicator.
 
-### 9.5 Resource Panel
+### 10.5 Resource Panel
 
 Shows the current inventory state of both shared resource pools:
 
 - **Tool Crib** — Available copies per tool set type (0–7), with badges showing count
 - **Pallet Magazine** — Available pallets per fixture type (0–3), with badges showing count
 
-### 9.6 Job Queue Panel
+### 10.6 Job Queue Panel
 
 Displays the next 8 jobs in the priority queue with:
 
@@ -515,7 +582,7 @@ Displays the next 8 jobs in the priority queue with:
 - Number of operations
 - Wait time (how long the job has been in the queue)
 
-### 9.7 Trend Charts
+### 10.7 Trend Charts
 
 A Canvas 2D time-series chart with a dropdown to select between four metrics:
 
@@ -526,7 +593,7 @@ A Canvas 2D time-series chart with a dropdown to select between four metrics:
 
 The chart maintains a rolling history of up to 1,800 data points (30 minutes at 1-second snapshot intervals).
 
-### 9.8 Event Log
+### 10.8 Event Log
 
 The bottom panel shows a scrolling log of simulation events with:
 
@@ -544,11 +611,11 @@ The log auto-scrolls to show the most recent events and retains up to 500 entrie
 
 ---
 
-## 10. IPC Protocol Reference
+## 11. IPC Protocol Reference
 
 When running in `--ipc` mode, the simulator and dashboard communicate over stdio using **JSON-lines** (one JSON object per newline character).
 
-### 10.1 Outgoing Messages (Sim → Dashboard, stdout)
+### 11.1 Outgoing Messages (Sim → Dashboard, stdout)
 
 #### `ready`
 Sent once at startup with configuration and factory layout.
@@ -574,7 +641,7 @@ Sent once at startup with configuration and factory layout.
   },
   "layout": {
     "mills": [{"id": 0, "row": 0, "col": 0, "loop_seg": 2, "spur_seg": 20}, ...],
-    "stations": {"tool_crib": 0, "pallet_magazine": 10}
+    "stations": {"tool_crib": 0, "pallet_magazine": 10, "chip_station": 5}
   }
 }
 ```
@@ -586,13 +653,13 @@ Periodic state snapshot (default: every 1 second of simulated time).
   "type": "snapshot",
   "time": 1234.5,
   "event_count": 5678,
-  "mills": [{"id": 0, "state": "Machining", "job_id": 42, "op_index": 0, "loaded_tool": 3, "loaded_pallet": 7, "parts_completed": 12, "busy_time": 890.5, "fault_time": 0.0}, ...],
+  "mills": [{"id": 0, "state": "Machining", "job_id": 42, "op_index": 0, "loaded_tool": 3, "loaded_pallet": 7, "parts_completed": 12, "busy_time": 890.5, "fault_time": 0.0, "chip_level": 45.2, "chip_capacity": 100.0}, ...],
   "agvs": [{"id": 0, "vehicle_type": "Agv", "state": "Traveling", "segment": 5, "cargo": {"Workpiece": {"job_id": 43, "op_index": 0}}, "path": [6, 7, 8, 29], "path_cursor": 1, "delivered": 8}, ...],
   "lane_occupancy": [0, -1, -1, 2, ...],
   "tool_crib": {"inventory": {"0": 3, "1": 4, ...}, "total_issues": 156},
   "pallet_magazine": {"available": {"0": 6, "1": 7, ...}, "total_issued": 132},
   "job_queue": {"depth": 5, "next_8": [{"id": 44, "priority": "Normal", "ops": 2, "wait_time": 45.3}, ...]},
-  "metrics": {"throughput": 312, "throughput_rate": 6.2, "avg_utilization": 0.248, "avg_queue_depth": 3.1, "deadlocks": 2, "faults": 15, "wip": 12, "max_wip": 20, "back_pressure_events": 3}
+  "metrics": {"throughput": 312, "throughput_rate": 6.2, "avg_utilization": 0.248, "avg_queue_depth": 3.1, "deadlocks": 2, "faults": 15, "wip": 12, "max_wip": 20, "back_pressure_events": 3, "chip_evacuations": 8}
 }
 ```
 
@@ -602,12 +669,13 @@ Discrete events of interest (faults, repairs, completions).
 {"type": "event", "time": 4231.5, "kind": "fault", "detail": {"target": {"Mill": 17}, "expected_repair": 6031.5}}
 {"type": "event", "time": 6031.5, "kind": "repair", "detail": {"target": {"Mill": 17}}}
 {"type": "event", "time": 1500.0, "kind": "completion", "detail": {"mill_id": 3, "job_id": 22}}
+{"type": "event", "time": 2870.0, "kind": "chip_evac", "detail": {"mill_id": 0}}
 ```
 
 #### `summary`
 Final summary sent when the simulation ends.
 
-### 10.2 Incoming Commands (Dashboard → Sim, stdin)
+### 11.2 Incoming Commands (Dashboard → Sim, stdin)
 
 | Command | Payload | Effect |
 |---|---|---|
@@ -622,41 +690,45 @@ Final summary sent when the simulation ends.
 
 ---
 
-## 11. Metrics and Interpretation
+## 12. Metrics and Interpretation
 
-### 11.1 Mill Utilization
+### 12.1 Mill Utilization
 
 Calculated as `busy_time / sim_duration` per mill. "Busy time" is the total time spent in the Machining state only. Loading, unloading, and tool changes are overhead and do not count as utilization. Average utilization is the mean across all 25 mills.
 
 Typical values for an 8-hour run with default parameters: **20–30% utilization**. This is realistic for a job-shop FMS where setup time, material handling, and queue waiting dominate. High-volume dedicated lines achieve higher utilization.
 
-### 11.2 Throughput
+### 12.2 Throughput
 
 Total parts completed across all mills, and the rate in parts per hour. With 25 mills and default job arrival rates, expect approximately **6–7 parts/hour** sustained throughput.
 
-### 11.3 Queue Depth
+### 12.3 Queue Depth
 
 Average number of jobs waiting in the queue. A growing queue indicates the system is overloaded (jobs arriving faster than they can be processed). A consistently empty queue indicates spare capacity.
 
-### 11.4 Deadlock Count
+### 12.4 Deadlock Count
 
 Number of times the wait-for graph detected a cycle among blocked AGVs. Each deadlock causes one AGV to lose its mission (victim retreat), so frequent deadlocks reduce effective throughput and increase job latency.
 
-### 11.5 Fault Count
+### 12.5 Fault Count
 
 Total equipment failure events (mills + AGVs + AMRs). With default MTBF values, expect roughly 25–40 faults in an 8-hour shift across all equipment.
 
-### 11.6 Back-Pressure Events
+### 12.6 Back-Pressure Events
 
 Number of scheduler ticks where dispatch was held because WIP had reached the `max_wip` limit. Frequent back-pressure indicates the WIP limit is constraining throughput — either the limit is too low for the arrival rate, or mills are taking too long to complete jobs. Zero back-pressure events mean the system never reached the WIP ceiling.
 
-### 11.7 WIP (Work in Progress)
+### 12.7 Chip Evacuations
 
-The current count of mills actively processing work (any state other than Idle or Faulted). Displayed in the dashboard as `current/max`. When WIP equals `max_wip`, the scheduler enters back-pressure mode and holds further dispatch until a mill finishes and returns to Idle.
+Total number of chip evacuation missions dispatched. Each evacuation ties up an AGV for the transit time to the mill spur plus 60 seconds of evacuation, competing directly with production dispatch. Frequent evacuations indicate mills are machining at high rates; zero evacuations mean chip bins never reached capacity (short simulation or low throughput).
+
+### 12.8 WIP (Work in Progress)
+
+The current count of mills actively processing work (any state other than Idle, Faulted, or ChipFull). Displayed in the dashboard as `current/max`. When WIP equals `max_wip`, the scheduler enters back-pressure mode and holds further dispatch until a mill finishes and returns to Idle. ChipFull mills are excluded from WIP to prevent chip-full conditions from artificially triggering back-pressure.
 
 ---
 
-## 12. Glossary
+## 13. Glossary
 
 | Term | Definition |
 |---|---|
@@ -664,6 +736,9 @@ The current count of mills actively processing work (any state other than Idle o
 | **AMR** | Autonomous Mobile Robot — a faster, more reliable vehicle restricted to the main loop. Cannot enter spur segments. |
 | **Back-pressure** | The scheduler's response when WIP reaches the configured limit: new job dispatch is held until a mill finishes. |
 | **BFS** | Breadth-First Search — the routing algorithm used to find shortest paths on the lane network. |
+| **Chip bin** | A container at each mill that collects metal chips (swarf) generated during machining. Capacity: 100 units. Must be evacuated by an AGV when full. |
+| **Chip evacuation** | The process of dispatching an AGV to a chip-full mill to empty its chip bin, competing with production dispatch for vehicle availability. |
+| **Chip station** | The waste disposal point at loop segment 5 where chip bins are emptied. |
 | **DES** | Discrete-Event Simulation — a simulation paradigm where state changes occur at discrete points in time driven by an event queue. |
 | **FMS** | Flexible Manufacturing System — a production system with CNC machines, automated material handling, and computer-controlled scheduling. |
 | **FSM** | Finite State Machine — a model with a fixed set of states and defined transitions between them. |

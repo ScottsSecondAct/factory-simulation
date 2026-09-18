@@ -7,7 +7,7 @@
 //! 3. Looks ahead N jobs to pre-stage resources.
 //! 4. Builds the wait-for graph and checks for deadlocks.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 use crate::agv::{Agv, LaneNetwork, WaitForGraph};
 use crate::engine::{Event, TimedEvent};
@@ -34,9 +34,11 @@ pub struct Scheduler {
     pub deadlocks_detected: u64,
     pub jobs_dispatched: u64,
     pub back_pressure_events: u64,
+    pub chip_evacs_dispatched: u64,
     pub max_wip: usize,
     next_job_id: u64,
     was_back_pressured: bool,
+    pending_chip_evacs: HashSet<MillId>,
 }
 
 impl Default for Scheduler {
@@ -48,9 +50,11 @@ impl Default for Scheduler {
             deadlocks_detected: 0,
             jobs_dispatched: 0,
             back_pressure_events: 0,
+            chip_evacs_dispatched: 0,
             max_wip: DEFAULT_MAX_WIP,
             next_job_id: 1,
             was_back_pressured: false,
+            pending_chip_evacs: HashSet::new(),
         }
     }
 }
@@ -91,16 +95,19 @@ impl Scheduler {
         // ── 1. Assign jobs to idle mills ────────────────────────────
         self.dispatch_jobs(now, mills, agvs, tool_crib, pallet_mag, lanes, &mut events);
 
-        // ── 2. Advance blocked AGVs ─────────────────────────────────
+        // ── 2. Dispatch chip evacuations ────────────────────────────
+        self.dispatch_chip_evacs(now, mills, agvs, lanes, &mut events);
+
+        // ── 3. Advance blocked AGVs ─────────────────────────────────
         self.try_advance_agvs(now, agvs, lanes, &mut events);
 
-        // ── 3. Look-ahead pre-staging ───────────────────────────────
+        // ── 4. Look-ahead pre-staging ───────────────────────────────
         self.look_ahead_stage(tool_crib, pallet_mag);
 
-        // ── 4. Deadlock detection ───────────────────────────────────
+        // ── 5. Deadlock detection ───────────────────────────────────
         self.detect_and_resolve_deadlocks(now, agvs, lanes, &mut events);
 
-        // ── 5. Schedule next tick ───────────────────────────────────
+        // ── 6. Schedule next tick ───────────────────────────────────
         events.push(TimedEvent {
             time: now + SCHEDULER_INTERVAL,
             event: Event::SchedulerTick,
@@ -113,8 +120,16 @@ impl Scheduler {
     pub fn wip_count(mills: &[Mill]) -> usize {
         mills
             .iter()
-            .filter(|m| m.state != MillState::Idle && m.state != MillState::Faulted)
+            .filter(|m| {
+                m.state != MillState::Idle
+                    && m.state != MillState::Faulted
+                    && m.state != MillState::ChipFull
+            })
             .count()
+    }
+
+    pub fn clear_pending_chip_evac(&mut self, mill_id: MillId) {
+        self.pending_chip_evacs.remove(&mill_id);
     }
 
     // ── Job dispatch ────────────────────────────────────────────────
@@ -241,6 +256,60 @@ impl Scheduler {
         // Remove assigned jobs (iterate in reverse to keep indices valid).
         for &qi in assigned.iter().rev() {
             self.job_queue.remove(qi);
+        }
+    }
+
+    // ── Chip evacuation dispatch ──────────────────────────────────
+    #[allow(clippy::needless_range_loop)]
+    fn dispatch_chip_evacs(
+        &mut self,
+        now: SimTime,
+        mills: &[Mill],
+        agvs: &mut [Agv],
+        lanes: &LaneNetwork,
+        events: &mut Vec<TimedEvent>,
+    ) {
+        for mid in 0..mills.len() {
+            if mills[mid].state != MillState::ChipFull {
+                continue;
+            }
+            if self.pending_chip_evacs.contains(&mid) {
+                continue;
+            }
+            let dest_spur = mill_spur(mid);
+            let agv_opt = agvs.iter().find(|a| a.is_idle() && a.can_enter_spur());
+            let Some(agv) = agv_opt else { break };
+            let agv_id = agv.id;
+
+            if let Some(path) = lanes.route(agvs[agv_id].segment, dest_spur) {
+                agvs[agv_id].state = AgvState::Traveling;
+                agvs[agv_id].cargo = Cargo::ChipBin(mid);
+                agvs[agv_id].path = path;
+                agvs[agv_id].path_cursor = 0;
+
+                if let Some(&seg) = agvs[agv_id].path.first() {
+                    events.push(TimedEvent {
+                        time: now + agvs[agv_id].travel_time(),
+                        event: Event::AgvArrived {
+                            agv_id,
+                            segment: seg,
+                        },
+                    });
+                } else {
+                    // Already at the spur
+                    events.push(TimedEvent {
+                        time: now + CHIP_EVAC_TIME,
+                        event: Event::ChipEvacDone(mid),
+                    });
+                    agvs[agv_id].state = AgvState::Idle;
+                    agvs[agv_id].cargo = Cargo::Empty;
+                    agvs[agv_id].loads_delivered += 1;
+                }
+
+                self.pending_chip_evacs.insert(mid);
+                self.chip_evacs_dispatched += 1;
+                eprintln!("[{now:.1}s] CHIP-EVAC: dispatched AGV {agv_id} to mill {mid}");
+            }
         }
     }
 

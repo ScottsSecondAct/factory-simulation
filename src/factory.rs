@@ -27,6 +27,8 @@ pub struct Mill {
     pub busy_time: SimTime,
     pub fault_time: SimTime,
     fault_start: Option<SimTime>,
+    pub chip_level: f64,
+    pub chip_capacity: f64,
 }
 
 impl Mill {
@@ -47,6 +49,8 @@ impl Mill {
             busy_time: 0.0,
             fault_time: 0.0,
             fault_start: None,
+            chip_level: 0.0,
+            chip_capacity: CHIP_CAPACITY,
         }
     }
 
@@ -70,6 +74,7 @@ impl Mill {
 
     pub fn finish_machining(&mut self, duration: SimTime) {
         self.busy_time += duration;
+        self.chip_level += duration * CHIP_RATE;
         self.state = MillState::Unloading;
     }
 
@@ -77,6 +82,15 @@ impl Mill {
         self.parts_completed += 1;
         self.current_job = None;
         self.loaded_pallet_type = None;
+        if self.chip_level >= self.chip_capacity {
+            self.state = MillState::ChipFull;
+        } else {
+            self.state = MillState::Idle;
+        }
+    }
+
+    pub fn finish_chip_evac(&mut self) {
+        self.chip_level = 0.0;
         self.state = MillState::Idle;
     }
 

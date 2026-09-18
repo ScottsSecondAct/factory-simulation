@@ -11,6 +11,7 @@ const STATE_FILL: Record<string, string> = {
   WaitingPallet: "#713f12",
   WaitingTool: "#713f12",
   Faulted: "#7f1d1d",
+  ChipFull: "#92400e",
 };
 
 interface Props {
@@ -32,6 +33,9 @@ export function MillGrid({ mills, fl, selectedMill, onSelectMill }: Props) {
         const fill = STATE_FILL[m.state] || STATE_FILL.Idle;
         const selected = selectedMill === m.id;
         const faulted = m.state === "Faulted";
+        const chipFull = m.state === "ChipFull";
+        const chipPct = m.chip_capacity > 0 ? m.chip_level / m.chip_capacity : 0;
+        const chipBarW = rw - 8;
 
         return (
           <g
@@ -46,8 +50,8 @@ export function MillGrid({ mills, fl, selectedMill, onSelectMill }: Props) {
               height={rh}
               rx={4}
               fill={fill}
-              stroke={selected ? "var(--accent)" : faulted ? "var(--red)" : "none"}
-              strokeWidth={selected ? 2 : faulted ? 1.5 : 0}
+              stroke={selected ? "var(--accent)" : faulted ? "var(--red)" : chipFull ? "#f59e0b" : "none"}
+              strokeWidth={selected ? 2 : faulted ? 1.5 : chipFull ? 1.5 : 0}
               style={faulted ? { animation: "pulse-red 1.5s infinite" } : undefined}
             />
             <text
@@ -69,6 +73,25 @@ export function MillGrid({ mills, fl, selectedMill, onSelectMill }: Props) {
             >
               {m.state}
             </text>
+            {/* Chip level indicator bar */}
+            <rect
+              x={pos.x - chipBarW / 2}
+              y={pos.y + rh / 2 - 5}
+              width={chipBarW}
+              height={3}
+              rx={1}
+              fill="#1a1a2e"
+            />
+            {chipPct > 0 && (
+              <rect
+                x={pos.x - chipBarW / 2}
+                y={pos.y + rh / 2 - 5}
+                width={chipBarW * Math.min(chipPct, 1)}
+                height={3}
+                rx={1}
+                fill={chipPct >= 1 ? "#f59e0b" : "#6b7280"}
+              />
+            )}
           </g>
         );
       })}

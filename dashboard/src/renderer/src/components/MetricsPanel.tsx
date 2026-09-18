@@ -38,6 +38,7 @@ export function MetricsPanel() {
         </div>
         <MetricRow label="WIP" value={`${m.wip}/${m.max_wip}`} />
         <MetricRow label="Back-pressure" value={String(m.back_pressure_events)} />
+        <MetricRow label="Chip evacs" value={String(m.chip_evacuations)} />
         <MetricRow label="Queue" value={String(snapshot.job_queue.depth)} />
         <MetricRow label="Deadlocks" value={String(m.deadlocks)} />
         <MetricRow label="Faults" value={String(m.faults)} />

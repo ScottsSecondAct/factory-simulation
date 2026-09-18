@@ -22,6 +22,7 @@ pub enum Event {
         mill_id: MillId,
         job_id: JobId,
         op_index: usize,
+        duration: SimTime,
     },
     MillUnloadDone(MillId),
     ToolChangeDone(MillId),
@@ -47,6 +48,9 @@ pub enum Event {
         pallet_id: PalletId,
         dest_mill: MillId,
     },
+
+    // Chip evacuation
+    ChipEvacDone(MillId),
 
     // Faults
     FaultOccur(FaultTarget),

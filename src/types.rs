@@ -41,6 +41,10 @@ pub const TOOL_ISSUE_TIME: SimTime = 30.0;
 pub const PALLET_ISSUE_TIME: SimTime = 20.0;
 pub const SCHEDULER_INTERVAL: SimTime = 5.0;
 pub const DEFAULT_MAX_WIP: usize = 20;
+pub const CHIP_CAPACITY: f64 = 100.0;
+pub const CHIP_RATE: f64 = 0.05; // chip units per second of machining
+pub const CHIP_EVAC_TIME: SimTime = 60.0;
+pub const CHIP_STATION_SEG: SegmentId = 5;
 
 // ── Mill state machine ──────────────────────────────────────────────
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -53,6 +57,7 @@ pub enum MillState {
     Unloading,
     ToolChange,
     Faulted,
+    ChipFull,
 }
 
 // ── AGV state machine ───────────────────────────────────────────────
@@ -80,6 +85,7 @@ pub enum Cargo {
     Pallet(PalletId),
     ToolSet(ToolSetId),
     Workpiece { job_id: JobId, op_index: usize },
+    ChipBin(MillId),
 }
 
 // ── Job priority ────────────────────────────────────────────────────
