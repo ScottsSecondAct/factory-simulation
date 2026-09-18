@@ -359,6 +359,10 @@ impl IpcRunner {
 
     fn process_batch(&mut self) {
         for _ in 0..self.speed {
+            self.drain_commands();
+            if self.finished || self.paused {
+                return;
+            }
             if !self.step_one() {
                 self.emit_summary();
                 self.finished = true;
