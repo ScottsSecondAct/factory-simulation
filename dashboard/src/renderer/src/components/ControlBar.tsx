@@ -154,10 +154,10 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "3px 10px",
     borderRadius: 4,
     cursor: "pointer",
-    fontSize: 11,
+    fontSize: 12,
   },
   configLabel: {
-    fontSize: 11,
+    fontSize: 12,
     color: "var(--text-dim)",
   },
 };

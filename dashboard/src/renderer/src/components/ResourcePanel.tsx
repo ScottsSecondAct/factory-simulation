@@ -76,7 +76,7 @@ export function ResourcePanel() {
 const styles: Record<string, React.CSSProperties> = {
   section: { padding: "12px 14px", borderBottom: "1px solid var(--border)" },
   heading: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: 600,
     textTransform: "uppercase" as const,
     letterSpacing: "0.06em",
@@ -87,7 +87,7 @@ const styles: Record<string, React.CSSProperties> = {
   groupHeader: {
     display: "flex",
     justifyContent: "space-between",
-    fontSize: 12,
+    fontSize: 13,
     marginBottom: 4,
   },
   typeRow: {
@@ -96,8 +96,8 @@ const styles: Record<string, React.CSSProperties> = {
     flexWrap: "wrap" as const,
   },
   badge: {
-    fontSize: 10,
-    padding: "1px 5px",
+    fontSize: 11,
+    padding: "2px 6px",
     border: "1px solid var(--border)",
     borderRadius: 3,
     fontFamily: "'SF Mono', Consolas, monospace",

@@ -75,19 +75,19 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "6px 12px",
   },
   heading: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: 600,
     textTransform: "uppercase" as const,
     letterSpacing: "0.06em",
     color: "var(--text-dim)",
   },
-  count: { fontSize: 10, color: "var(--text-dim)" },
+  count: { fontSize: 11, color: "var(--text-dim)" },
   list: {
     flex: 1,
     overflowY: "auto" as const,
     padding: "0 12px 8px",
     fontFamily: "'SF Mono', 'Cascadia Code', Consolas, monospace",
-    fontSize: 11,
+    fontSize: 12,
   },
   entry: {
     padding: "1px 0",

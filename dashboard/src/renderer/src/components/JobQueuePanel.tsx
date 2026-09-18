@@ -49,7 +49,7 @@ export function JobQueuePanel() {
           </div>
         ))}
         {q.next_8.length === 0 && (
-          <div style={{ fontSize: 11, color: "var(--text-dim)" }}>Empty</div>
+          <div style={{ fontSize: 12, color: "var(--text-dim)" }}>Empty</div>
         )}
       </div>
     </div>
@@ -59,7 +59,7 @@ export function JobQueuePanel() {
 const styles: Record<string, React.CSSProperties> = {
   section: { padding: "12px 14px", borderBottom: "1px solid var(--border)" },
   heading: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: 600,
     textTransform: "uppercase" as const,
     letterSpacing: "0.06em",
@@ -70,11 +70,11 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     alignItems: "center",
     gap: 8,
-    fontSize: 11,
+    fontSize: 12,
     padding: "2px 0",
   },
-  jobId: { fontWeight: 600, width: 40 },
-  priority: { fontSize: 9, fontWeight: 600, width: 36 },
+  jobId: { fontWeight: 600, width: 44 },
+  priority: { fontSize: 10, fontWeight: 600, width: 38 },
   ops: { color: "var(--text-dim)", flex: 1 },
-  wait: { color: "var(--text-dim)", fontSize: 10 },
+  wait: { color: "var(--text-dim)", fontSize: 11 },
 };

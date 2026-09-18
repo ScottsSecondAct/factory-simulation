@@ -3,15 +3,15 @@ import type { FloorLayout } from "./layout";
 import { CELL_W, CELL_H } from "./layout";
 
 const STATE_FILL: Record<string, string> = {
-  Idle: "#2a3548",
-  Machining: "#166534",
-  Loading: "#1e3a5f",
-  Unloading: "#1e3a5f",
-  ToolChange: "#78350f",
-  WaitingPallet: "#713f12",
-  WaitingTool: "#713f12",
-  Faulted: "#7f1d1d",
-  ChipFull: "#92400e",
+  Idle: "#e2e5ea",
+  Machining: "#bbf7d0",
+  Loading: "#bfdbfe",
+  Unloading: "#bfdbfe",
+  ToolChange: "#fde68a",
+  WaitingPallet: "#fef08a",
+  WaitingTool: "#fef08a",
+  Faulted: "#fecaca",
+  ChipFull: "#fed7aa",
 };
 
 interface Props {
@@ -80,7 +80,7 @@ export function MillGrid({ mills, fl, selectedMill, onSelectMill }: Props) {
               width={chipBarW}
               height={3}
               rx={1}
-              fill="#1a1a2e"
+              fill="#d0d4dc"
             />
             {chipPct > 0 && (
               <rect

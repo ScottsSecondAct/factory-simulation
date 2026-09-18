@@ -19,7 +19,7 @@ export function LaneNetwork({ fl, laneOccupancy }: Props) {
         y1={a.y}
         x2={b.x}
         y2={b.y}
-        stroke={occupied ? "#2a4a6a" : "#1e2a40"}
+        stroke={occupied ? "#93c5fd" : "#cbd5e1"}
         strokeWidth={occupied ? 3 : 2}
         strokeLinecap="round"
       />
@@ -35,7 +35,7 @@ export function LaneNetwork({ fl, laneOccupancy }: Props) {
         y1={spur.from.y}
         x2={spur.to.x}
         y2={spur.to.y}
-        stroke={occupied ? "#2a4a6a" : "#1e2a40"}
+        stroke={occupied ? "#93c5fd" : "#cbd5e1"}
         strokeWidth={1.5}
         strokeDasharray="4 3"
         strokeLinecap="round"

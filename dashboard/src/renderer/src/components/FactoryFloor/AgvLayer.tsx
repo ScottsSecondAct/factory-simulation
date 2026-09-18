@@ -63,7 +63,7 @@ export function AgvLayer({ agvs, fl, loopSegments }: Props) {
                 height={12}
                 rx={2}
                 fill={color}
-                stroke="#0f1117"
+                stroke="#ffffff"
                 strokeWidth={1.5}
                 transform={`rotate(45 ${pos.x} ${pos.y})`}
                 style={faulted ? { animation: "pulse-red 1s infinite" } : undefined}
@@ -74,7 +74,7 @@ export function AgvLayer({ agvs, fl, loopSegments }: Props) {
                 cy={pos.y}
                 r={7}
                 fill={color}
-                stroke="#0f1117"
+                stroke="#ffffff"
                 strokeWidth={1.5}
                 style={faulted ? { animation: "pulse-red 1s infinite" } : undefined}
               />
@@ -83,7 +83,7 @@ export function AgvLayer({ agvs, fl, loopSegments }: Props) {
               x={pos.x}
               y={pos.y + 3.5}
               textAnchor="middle"
-              fill="#0f1117"
+              fill="#ffffff"
               fontSize={8}
               fontWeight={700}
             >

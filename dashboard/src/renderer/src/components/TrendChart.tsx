@@ -60,7 +60,7 @@ export function TrendChart() {
     const color = COLORS[trendMetric] || COLORS.throughput;
 
     // Grid lines
-    ctx.strokeStyle = "rgba(42, 45, 58, 0.8)";
+    ctx.strokeStyle = "rgba(99, 109, 138, 0.2)";
     ctx.lineWidth = 0.5;
     for (let i = 0; i <= 4; i++) {
       const y = 8 + ((h - 16) * i) / 4;
@@ -130,7 +130,7 @@ const styles: Record<string, React.CSSProperties> = {
     color: "var(--text-dim)",
     border: "1px solid var(--border)",
     borderRadius: 3,
-    fontSize: 10,
+    fontSize: 12,
     padding: "2px 6px",
     outline: "none",
   },

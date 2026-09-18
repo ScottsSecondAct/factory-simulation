@@ -67,22 +67,22 @@ function MetricRow({ label, value }: { label: string; value: string }) {
 const styles: Record<string, React.CSSProperties> = {
   section: { padding: "12px 14px", borderBottom: "1px solid var(--border)" },
   heading: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: 600,
     textTransform: "uppercase" as const,
     letterSpacing: "0.06em",
     color: "var(--text-dim)",
     marginBottom: 8,
   },
-  grid: { display: "flex", flexDirection: "column" as const, gap: 4 },
+  grid: { display: "flex", flexDirection: "column" as const, gap: 5 },
   row: {
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
-    fontSize: 12,
+    fontSize: 13,
   },
-  label: { color: "var(--text-dim)", fontSize: 11 },
-  value: { fontWeight: 600, fontSize: 12 },
+  label: { color: "var(--text-dim)", fontSize: 12 },
+  value: { fontWeight: 600, fontSize: 13 },
   barTrack: {
     flex: 1,
     height: 4,

@@ -56,7 +56,7 @@ function createWindow(): void {
     height: 900,
     minWidth: 1024,
     minHeight: 700,
-    backgroundColor: "#0f1117",
+    backgroundColor: "#f0f2f5",
     icon,
     show: false,
     webPreferences: {
