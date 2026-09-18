@@ -1,17 +1,74 @@
-:root {
+:root,
+:root[data-theme="dark"] {
+  --bg: #1b2033;
+  --bg-card: #242a3e;
+  --bg-hover: #2e3550;
+  --border: #4a5370;
+  --text: #f0f3fa;
+  --text-dim: #9aa3be;
+  --accent: #7b9bff;
+  --green: #4ade80;
+  --yellow: #fbbf24;
+  --orange: #fb923c;
+  --red: #f87171;
+  --purple: #b197fc;
+  --cyan: #22d3ee;
+
+  --mill-idle: #2a3548;
+  --mill-machining: #166534;
+  --mill-loading: #1e3a5f;
+  --mill-toolchange: #78350f;
+  --mill-waiting: #713f12;
+  --mill-faulted: #7f1d1d;
+  --mill-chipfull: #92400e;
+  --chip-bar-bg: #0f1520;
+  --lane-occupied: #3b6a9a;
+  --lane-empty: #2a3650;
+  --agv-stroke: #1b2033;
+  --station-tools-bg: #78350f;
+  --station-tools-border: #fbbf24;
+  --station-pallets-bg: #1e3a5f;
+  --station-pallets-border: #7b9bff;
+  --station-prep-bg: #3b1f5e;
+  --station-prep-border: #b197fc;
+  --station-prep-text: #b197fc;
+  --chart-grid: rgba(120, 130, 160, 0.4);
+}
+
+:root[data-theme="light"] {
   --bg: #f0f2f5;
   --bg-card: #ffffff;
-  --bg-hover: #e8eaef;
-  --border: #d0d4dc;
-  --text: #1a1e2b;
-  --text-dim: #5c6478;
-  --accent: #4a6cf7;
-  --green: #16a368;
-  --yellow: #d49a08;
-  --orange: #e06012;
-  --red: #dc2626;
-  --purple: #7c5cbf;
-  --cyan: #0891b2;
+  --bg-hover: #e0e3ea;
+  --border: #b0b8c8;
+  --text: #0f1219;
+  --text-dim: #3d4660;
+  --accent: #3b5ce4;
+  --green: #0f8a55;
+  --yellow: #b8860b;
+  --orange: #c85000;
+  --red: #c62828;
+  --purple: #6a3daf;
+  --cyan: #0e7490;
+
+  --mill-idle: #d6dae2;
+  --mill-machining: #a7f3d0;
+  --mill-loading: #a5d0fe;
+  --mill-toolchange: #fde68a;
+  --mill-waiting: #fef08a;
+  --mill-faulted: #fca5a5;
+  --mill-chipfull: #fdba74;
+  --chip-bar-bg: #c0c6d0;
+  --lane-occupied: #60a5fa;
+  --lane-empty: #b0bdd0;
+  --agv-stroke: #ffffff;
+  --station-tools-bg: #fef3c7;
+  --station-tools-border: #b45309;
+  --station-pallets-bg: #dbeafe;
+  --station-pallets-border: #3b5ce4;
+  --station-prep-bg: #ede9fe;
+  --station-prep-border: #6a3daf;
+  --station-prep-text: #6a3daf;
+  --chart-grid: rgba(60, 70, 90, 0.2);
 }
 
 * {

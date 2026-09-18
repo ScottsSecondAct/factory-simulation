@@ -46,6 +46,11 @@ function eventText(msg: SimMessage & { type: "event" }): string {
 export default function App() {
   const status = useStore((s) => s.status);
   const layout = useStore((s) => s.layout);
+  const theme = useStore((s) => s.theme);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+  }, [theme]);
 
   useEffect(() => {
     const store = useStore.getState();

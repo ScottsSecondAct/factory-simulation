@@ -20,6 +20,7 @@ export function TrendChart() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const trendMetric = useStore((s) => s.trendMetric);
   const setTrendMetric = useStore((s) => s.setTrendMetric);
+  const theme = useStore((s) => s.theme);
   const throughputHistory = useStore((s) => s.throughputHistory);
   const utilizationHistory = useStore((s) => s.utilizationHistory);
   const queueHistory = useStore((s) => s.queueHistory);
@@ -59,8 +60,8 @@ export function TrendChart() {
 
     const color = COLORS[trendMetric] || COLORS.throughput;
 
-    // Grid lines
-    ctx.strokeStyle = "rgba(99, 109, 138, 0.2)";
+    const gridColor = getComputedStyle(canvas).getPropertyValue("--chart-grid").trim();
+    ctx.strokeStyle = gridColor || "rgba(99, 109, 138, 0.3)";
     ctx.lineWidth = 0.5;
     for (let i = 0; i <= 4; i++) {
       const y = 8 + ((h - 16) * i) / 4;
@@ -89,7 +90,7 @@ export function TrendChart() {
     ctx.closePath();
     ctx.fillStyle = color.replace(")", ", 0.08)").replace("rgb", "rgba");
     ctx.fill();
-  }, [data, trendMetric]);
+  }, [data, trendMetric, theme]);
 
   return (
     <div style={styles.container}>

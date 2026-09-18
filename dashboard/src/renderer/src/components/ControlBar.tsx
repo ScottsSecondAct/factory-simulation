@@ -3,7 +3,7 @@ import { useStore } from "../store";
 const SPEEDS = [1, 4, 16, 64, 256];
 
 export function ControlBar() {
-  const { status, config, snapshot, speedMultiplier, setSpeed } = useStore();
+  const { status, config, snapshot, speedMultiplier, setSpeed, theme, toggleTheme } = useStore();
 
   const handleStart = async () => {
     const { setStatus, reset } = useStore.getState();
@@ -115,6 +115,13 @@ export function ControlBar() {
             {useStore.getState().errorMsg}
           </span>
         )}
+        <button
+          style={styles.themeBtn}
+          onClick={toggleTheme}
+          title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+        >
+          {theme === "dark" ? "☀" : "☾"}
+        </button>
       </div>
     </header>
   );
@@ -159,5 +166,15 @@ const styles: Record<string, React.CSSProperties> = {
   configLabel: {
     fontSize: 12,
     color: "var(--text-dim)",
+  },
+  themeBtn: {
+    background: "none",
+    border: "1px solid var(--border)",
+    color: "var(--text)",
+    padding: "3px 8px",
+    borderRadius: 4,
+    cursor: "pointer",
+    fontSize: 14,
+    lineHeight: 1,
   },
 };

@@ -12,6 +12,15 @@ import type {
 
 type Status = "disconnected" | "ready" | "running" | "paused" | "finished" | "error";
 type TrendMetric = "throughput" | "utilization" | "queue_depth" | "active_mills";
+export type Theme = "dark" | "light";
+
+function getInitialTheme(): Theme {
+  try {
+    const saved = localStorage.getItem("factory-sim-theme");
+    if (saved === "light" || saved === "dark") return saved;
+  } catch { /* noop */ }
+  return "dark";
+}
 
 const MAX_HISTORY = 1800;
 const MAX_LOG = 500;
@@ -35,6 +44,7 @@ interface SimState {
   selectedMill: MillId | null;
   trendMetric: TrendMetric;
   speedMultiplier: number;
+  theme: Theme;
 
   setStatus: (s: Status) => void;
   setError: (msg: string) => void;
@@ -46,6 +56,7 @@ interface SimState {
   setSelectedMill: (id: MillId | null) => void;
   setTrendMetric: (m: TrendMetric) => void;
   setSpeed: (s: number) => void;
+  toggleTheme: () => void;
   reset: () => void;
 }
 
@@ -73,6 +84,7 @@ export const useStore = create<SimState>((set) => ({
   selectedMill: null,
   trendMetric: "throughput",
   speedMultiplier: 1,
+  theme: getInitialTheme(),
 
   setStatus: (s) => set({ status: s }),
   setError: (msg) => set({ status: "error", errorMsg: msg }),
@@ -141,6 +153,12 @@ export const useStore = create<SimState>((set) => ({
   setSelectedMill: (id) => set({ selectedMill: id }),
   setTrendMetric: (m) => set({ trendMetric: m }),
   setSpeed: (s) => set({ speedMultiplier: s }),
+  toggleTheme: () =>
+    set((state) => {
+      const next = state.theme === "dark" ? "light" : "dark";
+      try { localStorage.setItem("factory-sim-theme", next); } catch { /* noop */ }
+      return { theme: next };
+    }),
   reset: () =>
     set({
       status: "disconnected",

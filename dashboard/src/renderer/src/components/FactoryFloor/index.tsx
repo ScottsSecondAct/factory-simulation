@@ -42,8 +42,8 @@ export function FactoryFloor({ layout }: Props) {
             width={28}
             height={16}
             rx={3}
-            fill="#fef3c7"
-            stroke="#d97706"
+            fill="var(--station-tools-bg)"
+            stroke="var(--station-tools-border)"
             strokeWidth={1}
           />
           <text
@@ -64,8 +64,8 @@ export function FactoryFloor({ layout }: Props) {
             width={28}
             height={16}
             rx={3}
-            fill="#dbeafe"
-            stroke="#4a6cf7"
+            fill="var(--station-pallets-bg)"
+            stroke="var(--station-pallets-border)"
             strokeWidth={1}
           />
           <text
@@ -86,15 +86,15 @@ export function FactoryFloor({ layout }: Props) {
             width={28}
             height={16}
             rx={3}
-            fill="#ede9fe"
-            stroke="#7c3aed"
+            fill="var(--station-prep-bg)"
+            stroke="var(--station-prep-border)"
             strokeWidth={1}
           />
           <text
             x={fl.stationPositions.workPrep.x}
             y={fl.stationPositions.workPrep.y + 4}
             textAnchor="middle"
-            fill="#7c3aed"
+            fill="var(--station-prep-text)"
             fontSize={6}
             fontWeight={600}
           >

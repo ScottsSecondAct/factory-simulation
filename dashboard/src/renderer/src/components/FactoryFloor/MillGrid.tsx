@@ -2,16 +2,16 @@ import type { MillSnap, MillId } from "../../types";
 import type { FloorLayout } from "./layout";
 import { CELL_W, CELL_H } from "./layout";
 
-const STATE_FILL: Record<string, string> = {
-  Idle: "#e2e5ea",
-  Machining: "#bbf7d0",
-  Loading: "#bfdbfe",
-  Unloading: "#bfdbfe",
-  ToolChange: "#fde68a",
-  WaitingPallet: "#fef08a",
-  WaitingTool: "#fef08a",
-  Faulted: "#fecaca",
-  ChipFull: "#fed7aa",
+const STATE_VAR: Record<string, string> = {
+  Idle: "var(--mill-idle)",
+  Machining: "var(--mill-machining)",
+  Loading: "var(--mill-loading)",
+  Unloading: "var(--mill-loading)",
+  ToolChange: "var(--mill-toolchange)",
+  WaitingPallet: "var(--mill-waiting)",
+  WaitingTool: "var(--mill-waiting)",
+  Faulted: "var(--mill-faulted)",
+  ChipFull: "var(--mill-chipfull)",
 };
 
 interface Props {
@@ -30,7 +30,7 @@ export function MillGrid({ mills, fl, selectedMill, onSelectMill }: Props) {
       {mills.map((m) => {
         const pos = fl.millPositions[m.id];
         if (!pos) return null;
-        const fill = STATE_FILL[m.state] || STATE_FILL.Idle;
+        const fill = STATE_VAR[m.state] || STATE_VAR.Idle;
         const selected = selectedMill === m.id;
         const faulted = m.state === "Faulted";
         const chipFull = m.state === "ChipFull";
@@ -80,7 +80,7 @@ export function MillGrid({ mills, fl, selectedMill, onSelectMill }: Props) {
               width={chipBarW}
               height={3}
               rx={1}
-              fill="#d0d4dc"
+              fill="var(--chip-bar-bg)"
             />
             {chipPct > 0 && (
               <rect
