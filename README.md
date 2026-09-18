@@ -4,6 +4,7 @@ Discrete-event factory orchestration simulator modeling a flexible manufacturing
 
 [![Rust](https://img.shields.io/badge/Rust-2021_edition-orange)](https://www.rust-lang.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-blue?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Electron](https://img.shields.io/badge/Electron-35-47848F?logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![License](https://img.shields.io/badge/License-Source_Available-lightgrey.svg)](LICENSE)
 [![CI](https://github.com/ScottsSecondAct/factory-simulation/actions/workflows/ci.yml/badge.svg)](https://github.com/ScottsSecondAct/factory-simulation/actions/workflows/ci.yml)
 [![Claude Assisted](https://img.shields.io/badge/Claude-Assisted-blueviolet?logo=anthropic&logoColor=white)](https://claude.ai)
