@@ -43,6 +43,7 @@ Key fixed stations on the loop:
 - **Segment 0**: Tool Crib — where tool sets are issued and returned.
 - **Segment 5**: Chip Station — waste station where chip bins are emptied during chip evacuation.
 - **Segment 10**: Pallet Magazine — where pallet fixtures are dispensed and returned.
+- **Segment 15**: Work Prep Station — robotic billet loading station where raw stock is clamped onto pallet fixtures before delivery to a mill.
 
 Mill rows attach to the loop at specific segments:
 - Row 0 (Mills 0–4): loop segment 2
@@ -52,29 +53,30 @@ Mill rows attach to the loop at specific segments:
 - Row 4 (Mills 20–24): loop segment 18
 
 ```
-         Tool Crib (seg 0)
+              Tool Crib (seg 0)
+                   |
+         +--- 19 < 0 > 1 ---+
+         |    |              |
+        18    2--[Row 0: Mills 0-4, spurs 20-24]
+         |    |
+        17    3
+         |    |
+        16    4
+         |    |              Chip Station (seg 5)
+Work     |    |                   |
+Prep  > 15    5 <-----------------+
+(seg 15) |    |
+        14    6--[Row 1: Mills 5-9, spurs 25-29]
+         |    |
+        13    7
+         |    |
+        12    8
+         |    |
+        11    9
+         |    |              |
+         +-- 10 < - - - - ---+
               |
-    +--- 19 < 0 > 1 ---+
-    |    |              |
-   18    2--[Row 0: Mills 0-4, spurs 20-24]
-    |    |
-   17    3
-    |    |
-   16    4
-    |    |
-   15    5
-    |    |
-   14    6--[Row 1: Mills 5-9, spurs 25-29]
-    |    |
-   13    7
-    |    |
-   12    8
-    |    |
-   11    9
-    |    |              |
-    +-- 10 < - - - - ---+
-         |
-    Pallet Magazine (seg 10)
+         Pallet Magazine (seg 10)
 ```
 
 Routing uses **BFS shortest-path** on the bidirectional graph. AGVs can traverse the loop in either direction, choosing the shorter arc to reach their destination. AMRs use a restricted BFS that excludes spur segments.
@@ -148,14 +150,15 @@ The factory operates a **heterogeneous fleet** of vehicles: **6 AGVs** and **2 A
 | Repair duration | 900s (15 minutes) | 600s (10 minutes) |
 | ID range | 0–5 | 6+ (starting after AGVs) |
 
-AMRs are faster and more reliable, but because they cannot enter spur segments, they cannot deliver workpieces directly to mills. The scheduler only dispatches AGVs for missions that require spur access (which currently includes all mill deliveries). AMRs participate in lane network traffic and are available for future loop-based transport tasks.
+AMRs are faster and more reliable, but because they cannot enter spur segments, they cannot deliver workpieces directly to mills. AMRs can participate in the first leg of a two-leg mission (delivering raw pallets to the work prep station on the main loop). Only AGVs handle the second leg (delivering prepared workpieces from work prep to mill spurs).
 
 **Vehicle cargo types:**
 - `Empty` — no cargo
 - `Pallet(id)` — carrying a specific pallet fixture
 - `ToolSet(id)` — carrying a specific tool set
-- `Workpiece { job_id, op_index }` — carrying a workpiece for a specific job and operation
+- `Workpiece { job_id, op_index }` — carrying a prepared workpiece for delivery to a mill spur
 - `ChipBin(mill_id)` — carrying a chip bin from a specific mill for evacuation
+- `PrepPallet { job_id, op_index, mill_id }` — carrying a raw pallet to the work prep station for billet loading
 
 **Initial positions:** AGVs start distributed around the loop at segments 0, 3, 6, 9, 12, and 15 (computed as `(id × 3) % 20`). AMRs are placed at offset positions to avoid collisions (computed as `((NUM_AGVS + i) × 3 + 1) % 20`).
 
@@ -190,7 +193,38 @@ Pallet types represent different fixture geometries for different part shapes. E
 
 Like the tool crib, the pallet magazine creates finite-resource contention that the scheduler must manage.
 
-### 3.5 Job Queue
+### 3.5 Work Prep Station
+
+The work prep station is a **robotic billet loading station** located at **loop segment 15**. It models the real-world process of clamping raw stock onto pallet fixtures before the workpiece can be delivered to a mill for machining. It is a **single-server queue**: one robot processes items one at a time from a FIFO queue with a maximum depth of **4 items**.
+
+**State machine (3 states):**
+
+| State | Description |
+|---|---|
+| **Idle** | Robot is available. If the queue is non-empty, it immediately dequeues and begins processing. |
+| **Processing** | Robot is clamping a billet onto a pallet fixture. Duration: **60–120 seconds** (uniform random). |
+| **Faulted** | Robot has experienced a breakdown. Processing resumes after repair. |
+
+**Processing flow:**
+
+1. A vehicle delivers a `PrepPallet` to segment 15 and unloads.
+2. The pallet is enqueued at the work prep station.
+3. If the station is Idle and the queue is non-empty, it dequeues an item and begins Processing.
+4. After 60–120 seconds, the prepared workpiece is pushed to the scheduler's delivery queue.
+5. The scheduler dispatches a spur-capable AGV to carry the prepared workpiece to the assigned mill.
+
+**Fault behavior:** When the station faults during Processing, the item being worked on is returned to the front of the queue (preserving its priority). A **generation counter** ensures that any in-flight `WorkPrepDone` event from before the fault is ignored — the counter increments each time processing starts, and the event carries the generation it was created with. On repair, the station returns to Idle and immediately starts the next queued item if available.
+
+**Fault parameters:**
+
+| Parameter | Default | Description |
+|---|---|---|
+| Work prep MTBF | 57,600s (16 hours) | Mean time between station failures |
+| Work prep repair | 600s (10 minutes) | Fixed repair duration |
+
+**Capacity management:** The scheduler checks `queue_depth + pending_deliveries < 4` before dispatching new jobs through the work prep station. This prevents flooding the station's queue and stalling the pipeline.
+
+### 3.6 Job Queue
 
 Jobs arrive stochastically following a **Poisson process** with a mean inter-arrival time of **120 seconds** (approximately 30 jobs per hour). Each job is a work order consisting of:
 
@@ -212,24 +246,38 @@ The queue is maintained in **priority order** (stable within the same priority l
 
 ## 4. Scheduling Engine
 
-The scheduler runs on a **5-second periodic heartbeat** (`SchedulerTick`). Each tick executes six phases in order:
+The scheduler runs on a **5-second periodic heartbeat** (`SchedulerTick`). Each tick executes seven phases in order:
 
-### 4.1 Phase 1: Job Dispatch
+### 4.1 Phase 1: Prepared Workpiece Delivery
+
+The scheduler delivers prepared workpieces from the work prep station to their assigned mills. This phase runs first (highest priority) because prepared workpieces are already clamped and ready — any delay wastes the robot's setup time.
+
+For each pending delivery:
+1. Find an idle **spur-capable AGV** (AMRs cannot enter mill spurs).
+2. Route the AGV to the assigned mill's spur segment with `Workpiece` cargo.
+3. Increment the work prep delivery counter.
+
+### 4.2 Phase 2: Job Dispatch
 
 The scheduler scans the job queue front-to-back and attempts to assign each job to a mill. Before each dispatch, the scheduler enforces **WIP admission control**: if the number of mills actively processing work (not Idle and not Faulted) has reached the configurable `max_wip` limit (default: 20), dispatch is suspended and a back-pressure event is recorded. Dispatch resumes automatically when WIP drops below the limit. Back-pressure state transitions are logged to stderr (only on the transition into and out of back-pressure, not every tick).
+
+Jobs now follow a **two-leg mission** through the work prep station:
 
 For each job:
 
 1. **Check WIP limit.** If WIP ≥ `max_wip`, stop dispatching (back-pressure).
-2. **Find an idle mill.** Prefer a mill that already has the correct tool set loaded (avoids a 120-second tool change).
-3. **Check resource availability.** Verify the required tool set has copies in the crib and the required pallet type is available in the magazine.
-4. **Find an idle vehicle.** Spur deliveries require an AGV (AMRs cannot enter spurs). If no suitable vehicle is free, dispatch pauses.
-5. **Reserve resources.** Check out the tool set, take the pallet, start a tool change if needed.
-6. **Dispatch vehicle.** Compute the shortest path from the vehicle's current position to the mill's spur segment and begin movement. The travel time per segment depends on the vehicle type (8s for AGVs, 6s for AMRs).
+2. **Check work prep capacity.** If the station's queue plus pending deliveries ≥ 4, stop dispatching (prevents flooding the bottleneck).
+3. **Find an idle mill.** Prefer a mill that already has the correct tool set loaded (avoids a 120-second tool change).
+4. **Check resource availability.** Verify the required tool set has copies in the crib and the required pallet type is available in the magazine.
+5. **Find an idle vehicle.** Any vehicle (AGV or AMR) can handle the first leg since the work prep station is on the main loop. If no vehicle is free, dispatch pauses.
+6. **Reserve resources.** Check out the tool set, take the pallet, start a tool change if needed. Put the mill into Loading state.
+7. **Dispatch vehicle (Leg 1).** Route the vehicle to the work prep station (segment 15) with `PrepPallet` cargo containing the job ID, operation index, and assigned mill ID.
+
+After Leg 1 completes (vehicle arrives at work prep, unloads the raw pallet), the work prep station processes the billet (60–120s). When finished, the prepared workpiece is queued for Leg 2 delivery (Phase 1 on the next tick).
 
 Multiple jobs can be dispatched in a single tick if resources and vehicles are available.
 
-### 4.2 Phase 2: Chip Evacuation Dispatch
+### 4.3 Phase 3: Chip Evacuation Dispatch
 
 The scheduler scans all mills in the **ChipFull** state and dispatches an available AGV to each one. Only AGVs are dispatched for chip evacuation because the mission requires entering the mill's spur segment (AMRs are restricted to the main loop).
 
@@ -243,17 +291,17 @@ When the AGV arrives at the spur and unloads, a **60-second chip evacuation time
 
 Chip evacuation competes directly with production dispatch for AGV availability: an AGV servicing a chip-full mill is unavailable for workpiece delivery. This creates the scheduling tension that makes chip management a meaningful system concern.
 
-### 4.3 Phase 3: Blocked Vehicle Advancement
+### 4.4 Phase 4: Blocked Vehicle Advancement
 
 The scheduler first runs **idle-vehicle yielding**: for each blocked vehicle, if the segment it needs is held by an idle vehicle, the idle vehicle is moved to the nearest free loop segment (found via BFS). This prevents permanently parked AMRs or idle AGVs from creating impassable bottlenecks.
 
 After yielding, the scheduler checks all blocked vehicles and attempts to advance them. If the segment a vehicle is waiting for has become free, the vehicle claims it, releases its previous segment, and continues traveling.
 
-### 4.4 Phase 4: Look-Ahead Pre-Staging
+### 4.5 Phase 5: Look-Ahead Pre-Staging
 
 The scheduler examines the next 8 jobs in the queue and checks whether their required tool sets are available. In a production system, this would trigger pre-staging of tools to shadow positions. In the current implementation, it validates scheduling feasibility.
 
-### 4.5 Phase 5: Deadlock Detection and Resolution
+### 4.6 Phase 6: Deadlock Detection and Resolution
 
 The scheduler builds a **wait-for graph** from all currently blocked AGVs:
 - For each blocked AGV, determine which segment it wants.
@@ -266,7 +314,7 @@ If the graph contains a **cycle**, a deadlock has occurred (circular wait). The 
 
 ## 5. Fault Injection
 
-The simulator models **stochastic equipment failures** for mills, AGVs, and AMRs using an exponential distribution for time-between-failures.
+The simulator models **stochastic equipment failures** for mills, AGVs, AMRs, and the work prep station using an exponential distribution for time-between-failures.
 
 ### 5.1 Fault Parameters
 
@@ -278,12 +326,14 @@ The simulator models **stochastic equipment failures** for mills, AGVs, and AMRs
 | AGV repair duration | 900s (15 minutes) | Fixed time to repair a faulted AGV |
 | AMR MTBF | 57,600s (16 hours) | Mean time between AMR failures |
 | AMR repair duration | 600s (10 minutes) | Fixed time to repair a faulted AMR |
+| Work prep MTBF | 57,600s (16 hours) | Mean time between work prep station failures |
+| Work prep repair | 600s (10 minutes) | Fixed time to repair the work prep robot |
 
-AMRs are more reliable than AGVs (higher MTBF) and faster to repair, reflecting their simpler mechanical design (no guide-wire infrastructure, fewer wear components).
+AMRs are more reliable than AGVs (higher MTBF) and faster to repair, reflecting their simpler mechanical design (no guide-wire infrastructure, fewer wear components). The work prep station has the same fault profile as AMRs.
 
 ### 5.2 Fault Lifecycle
 
-1. **Seed**: At simulation start, an initial fault time is drawn from `Exp(MTBF)` for every piece of equipment (25 mills + 6 AGVs + 2 AMRs = 33 initial fault events by default).
+1. **Seed**: At simulation start, an initial fault time is drawn from `Exp(MTBF)` for every piece of equipment (25 mills + 6 AGVs + 2 AMRs + 1 work prep station = 34 initial fault events by default).
 2. **Occur**: When the fault event fires, the equipment transitions to the `Faulted` state. It stops processing work immediately. A repair event is scheduled at `now + repair_duration` (using the vehicle-type-specific repair time for AGVs and AMRs).
 3. **Repair**: The equipment returns to `Idle`. A new fault event is scheduled at `now + Exp(MTBF)`, continuing the failure cycle for the rest of the simulation.
 
@@ -353,7 +403,7 @@ There is **no real-time clock**. Simulated time advances discretely from event t
 | Event | Trigger | Effect |
 |---|---|---|
 | `JobArrival` | Poisson process | Enqueues a new job; schedules the next arrival |
-| `SchedulerTick` | Every 5s | Runs all 6 scheduling phases |
+| `SchedulerTick` | Every 5s | Runs all 7 scheduling phases |
 | `MillLoadDone` | 45s after loading begins | Mill transitions to Machining |
 | `MillMachiningDone` | 300–900s after machining begins | Mill transitions to Unloading |
 | `MillUnloadDone` | 45s after unloading begins | Pallet returned, mill becomes Idle |
@@ -362,6 +412,7 @@ There is **no real-time clock**. Simulated time advances discretely from event t
 | `AgvLoadDone` | After pickup | AGV begins traveling with cargo |
 | `AgvUnloadDone` | 45s after arriving at mill spur | Cargo delivered, AGV becomes Idle |
 | `ChipEvacDone` | 60s after AGV arrives at chip-full mill | Mill chip bin emptied, mill returns to Idle |
+| `WorkPrepDone` | 60–120s after processing starts | Prepared workpiece queued for mill delivery |
 | `FaultOccur` | Exp(MTBF) | Equipment faults; repair scheduled |
 | `FaultRepair` | Fixed duration after fault | Equipment restored; next fault scheduled |
 
@@ -563,6 +614,7 @@ Displays key performance indicators updated in real time:
 - WIP (current work-in-progress count / max WIP limit)
 - Back-pressure events (how many times dispatch was held due to WIP limit)
 - Chip evacuations (total chip bin evacuations dispatched)
+- Work prep jobs (billets processed by the work prep station, with current queue depth)
 
 Each utilization metric includes a visual bar indicator.
 
@@ -641,7 +693,7 @@ Sent once at startup with configuration and factory layout.
   },
   "layout": {
     "mills": [{"id": 0, "row": 0, "col": 0, "loop_seg": 2, "spur_seg": 20}, ...],
-    "stations": {"tool_crib": 0, "pallet_magazine": 10, "chip_station": 5}
+    "stations": {"tool_crib": 0, "pallet_magazine": 10, "chip_station": 5, "work_prep": 15}
   }
 }
 ```
@@ -659,7 +711,7 @@ Periodic state snapshot (default: every 1 second of simulated time).
   "tool_crib": {"inventory": {"0": 3, "1": 4, ...}, "total_issues": 156},
   "pallet_magazine": {"available": {"0": 6, "1": 7, ...}, "total_issued": 132},
   "job_queue": {"depth": 5, "next_8": [{"id": 44, "priority": "Normal", "ops": 2, "wait_time": 45.3}, ...]},
-  "metrics": {"throughput": 312, "throughput_rate": 6.2, "avg_utilization": 0.248, "avg_queue_depth": 3.1, "deadlocks": 2, "faults": 15, "wip": 12, "max_wip": 20, "back_pressure_events": 3, "chip_evacuations": 8}
+  "metrics": {"throughput": 312, "throughput_rate": 6.2, "avg_utilization": 0.248, "avg_queue_depth": 3.1, "deadlocks": 2, "faults": 15, "wip": 12, "max_wip": 20, "back_pressure_events": 3, "chip_evacuations": 8, "work_prep_jobs": 280, "work_prep_queue": 2, "work_prep_state": "Processing"}
 }
 ```
 
@@ -750,4 +802,5 @@ The current count of mills actively processing work (any state other than Idle, 
 | **Victim retreat** | Deadlock resolution strategy: one vehicle in the cycle drops its cargo and returns to Idle, breaking the circular wait. |
 | **Wait-for graph** | A directed graph where an edge from vehicle A to vehicle B means A is blocked waiting for a segment that B occupies. A cycle in this graph indicates deadlock. |
 | **WIP** | Work in Progress — the count of mills actively processing jobs (not Idle, not Faulted). Controlled by the `max_wip` admission limit. |
+| **Work prep station** | A robotic billet loading station at loop segment 15 that clamps raw stock onto pallet fixtures before mill delivery. Single-server queue with max depth 4. |
 | **Yield** | When an idle vehicle blocks an active vehicle's path, the scheduler moves the idle vehicle to the nearest free loop segment. |

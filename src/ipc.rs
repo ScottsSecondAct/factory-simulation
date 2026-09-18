@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agv::{Agv, LaneNetwork};
 use crate::engine::{Event, SimEngine, TimedEvent};
-use crate::factory::{Mill, PalletMagazine, ToolCrib};
+use crate::factory::{Mill, PalletMagazine, PrepItem, ToolCrib, WorkPrepStation};
 use crate::fault::{FaultConfig, FaultInjector};
 use crate::metrics::Metrics;
 use crate::scheduler::Scheduler;
@@ -83,6 +83,7 @@ pub struct StationLayout {
     pub tool_crib: SegmentId,
     pub pallet_magazine: SegmentId,
     pub chip_station: SegmentId,
+    pub work_prep: SegmentId,
 }
 
 #[derive(Serialize)]
@@ -163,6 +164,9 @@ pub struct MetricsSnap {
     pub max_wip: usize,
     pub back_pressure_events: u64,
     pub chip_evacuations: u64,
+    pub work_prep_jobs: u64,
+    pub work_prep_queue: usize,
+    pub work_prep_state: WorkPrepState,
 }
 
 #[derive(Serialize)]
@@ -175,6 +179,7 @@ pub struct SummaryMsg {
     pub total_faults: u64,
     pub back_pressure_events: u64,
     pub chip_evacuations: u64,
+    pub work_prep_jobs: u64,
     pub mill_utilization: Vec<f64>,
     pub avg_utilization: f64,
     pub avg_queue_depth: f64,
@@ -231,6 +236,7 @@ pub struct IpcRunner {
     pallet_mag: PalletMagazine,
     scheduler: Scheduler,
     fault_inj: FaultInjector,
+    work_prep: WorkPrepStation,
     metrics: Metrics,
     engine: SimEngine,
     rng: StdRng,
@@ -300,6 +306,7 @@ impl IpcRunner {
             pallet_mag,
             scheduler,
             fault_inj,
+            work_prep: WorkPrepStation::new(),
             metrics,
             engine,
             rng,
@@ -451,6 +458,7 @@ impl IpcRunner {
                     tool_crib: TOOL_CRIB_SEG,
                     pallet_magazine: PALLET_MAG_SEG,
                     chip_station: CHIP_STATION_SEG,
+                    work_prep: WORK_PREP_SEG,
                 },
             },
         };
@@ -556,6 +564,9 @@ impl IpcRunner {
                 max_wip: self.scheduler.max_wip,
                 back_pressure_events: self.scheduler.back_pressure_events,
                 chip_evacuations: self.scheduler.chip_evacs_dispatched,
+                work_prep_jobs: self.work_prep.jobs_completed,
+                work_prep_queue: self.work_prep.total_items(),
+                work_prep_state: self.work_prep.state.clone(),
             },
         };
 
@@ -576,6 +587,7 @@ impl IpcRunner {
                             now + self.fault_inj.config.agv_repair
                         }
                     }
+                    FaultTarget::WorkPrep => now + self.fault_inj.config.work_prep_repair,
                 };
                 emit_json(&OutMessage::Event {
                     time: now,
@@ -591,6 +603,7 @@ impl IpcRunner {
                         let vtype = if *id >= NUM_AGVS { "AMR" } else { "AGV" };
                         format!("{vtype} {id}")
                     }
+                    FaultTarget::WorkPrep => "Work Prep".to_string(),
                 };
                 eprintln!("[INFO] [{now:.1}s] FAULT: {label} down");
             }
@@ -606,6 +619,7 @@ impl IpcRunner {
                         let vtype = if *id >= NUM_AGVS { "AMR" } else { "AGV" };
                         format!("{vtype} {id}")
                     }
+                    FaultTarget::WorkPrep => "Work Prep".to_string(),
                 };
                 eprintln!("[INFO] [{now:.1}s] REPAIR: {label} back online");
             }
@@ -626,6 +640,18 @@ impl IpcRunner {
                     time: now,
                     kind: "chip_evac",
                     detail: serde_json::json!({ "mill_id": mid }),
+                });
+            }
+            Event::WorkPrepDone {
+                job_id, mill_id, ..
+            } => {
+                emit_json(&OutMessage::Event {
+                    time: now,
+                    kind: "work_prep_done",
+                    detail: serde_json::json!({
+                        "job_id": job_id,
+                        "mill_id": mill_id,
+                    }),
                 });
             }
             _ => {}
@@ -651,6 +677,7 @@ impl IpcRunner {
             total_faults: self.fault_inj.total_faults,
             back_pressure_events: self.scheduler.back_pressure_events,
             chip_evacuations: self.scheduler.chip_evacs_dispatched,
+            work_prep_jobs: self.work_prep.jobs_completed,
             mill_utilization: utilizations,
             avg_utilization: avg_util,
             avg_queue_depth: 0.0,
@@ -773,6 +800,31 @@ impl IpcRunner {
                             event: Event::ChipEvacDone(*mid),
                         });
                     }
+                    Cargo::PrepPallet {
+                        job_id,
+                        op_index,
+                        mill_id,
+                    } => {
+                        let item = PrepItem {
+                            job_id: *job_id,
+                            op_index: *op_index,
+                            mill_id: *mill_id,
+                        };
+                        self.work_prep.enqueue(item);
+                        if let Some((prep_item, gen)) = self.work_prep.try_start() {
+                            let prep_time = WORK_PREP_TIME_MIN
+                                + self.rng.gen::<f64>() * (WORK_PREP_TIME_MAX - WORK_PREP_TIME_MIN);
+                            out.push(TimedEvent {
+                                time: now + prep_time,
+                                event: Event::WorkPrepDone {
+                                    job_id: prep_item.job_id,
+                                    op_index: prep_item.op_index,
+                                    mill_id: prep_item.mill_id,
+                                    gen,
+                                },
+                            });
+                        }
+                    }
                     _ => {}
                 }
                 self.agvs[*agv_id].cargo = Cargo::Empty;
@@ -787,10 +839,47 @@ impl IpcRunner {
                 self.scheduler.clear_pending_chip_evac(*mid);
             }
 
+            Event::WorkPrepDone {
+                job_id,
+                op_index: _,
+                mill_id,
+                gen,
+            } => {
+                if *gen != self.work_prep.current_generation()
+                    || self.work_prep.state != WorkPrepState::Processing
+                {
+                    // Stale event
+                } else if let Some(item) = self.work_prep.finish_processing() {
+                    self.scheduler.pending_prep_deliveries.push_back(PrepItem {
+                        job_id: item.job_id,
+                        op_index: item.op_index,
+                        mill_id: item.mill_id,
+                    });
+                    eprintln!(
+                        "[INFO] [{now:.1}s] WORK-PREP: job {} ready for mill {}",
+                        job_id, mill_id
+                    );
+                    if let Some((next_item, next_gen)) = self.work_prep.try_start() {
+                        let prep_time = WORK_PREP_TIME_MIN
+                            + self.rng.gen::<f64>() * (WORK_PREP_TIME_MAX - WORK_PREP_TIME_MIN);
+                        out.push(TimedEvent {
+                            time: now + prep_time,
+                            event: Event::WorkPrepDone {
+                                job_id: next_item.job_id,
+                                op_index: next_item.op_index,
+                                mill_id: next_item.mill_id,
+                                gen: next_gen,
+                            },
+                        });
+                    }
+                }
+            }
+
             Event::FaultOccur(target) => {
                 match target {
                     FaultTarget::Mill(mid) => self.mills[*mid].fault(now),
                     FaultTarget::Agv(aid) => self.agvs[*aid].fault(),
+                    FaultTarget::WorkPrep => self.work_prep.fault(now),
                 }
                 out.push(self.fault_inj.schedule_repair(now, target));
             }
@@ -798,6 +887,22 @@ impl IpcRunner {
                 match target {
                     FaultTarget::Mill(mid) => self.mills[*mid].repair(now),
                     FaultTarget::Agv(aid) => self.agvs[*aid].repair(),
+                    FaultTarget::WorkPrep => {
+                        self.work_prep.repair(now);
+                        if let Some((item, gen)) = self.work_prep.try_start() {
+                            let prep_time = WORK_PREP_TIME_MIN
+                                + self.rng.gen::<f64>() * (WORK_PREP_TIME_MAX - WORK_PREP_TIME_MIN);
+                            out.push(TimedEvent {
+                                time: now + prep_time,
+                                event: Event::WorkPrepDone {
+                                    job_id: item.job_id,
+                                    op_index: item.op_index,
+                                    mill_id: item.mill_id,
+                                    gen,
+                                },
+                            });
+                        }
+                    }
                 }
                 out.push(
                     self.fault_inj
@@ -816,6 +921,7 @@ impl IpcRunner {
                     &mut self.tool_crib,
                     &mut self.pallet_mag,
                     &mut self.lanes,
+                    &self.work_prep,
                 );
                 out.extend(sched_events);
             }

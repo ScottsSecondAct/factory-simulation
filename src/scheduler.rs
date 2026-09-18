@@ -11,7 +11,7 @@ use std::collections::{HashSet, VecDeque};
 
 use crate::agv::{Agv, LaneNetwork, WaitForGraph};
 use crate::engine::{Event, TimedEvent};
-use crate::factory::{Mill, PalletMagazine, ToolCrib};
+use crate::factory::{Mill, PalletMagazine, PrepItem, ToolCrib, WorkPrepStation};
 use crate::types::*;
 
 const LOOK_AHEAD_DEPTH: usize = 8;
@@ -35,10 +35,12 @@ pub struct Scheduler {
     pub jobs_dispatched: u64,
     pub back_pressure_events: u64,
     pub chip_evacs_dispatched: u64,
+    pub work_prep_deliveries: u64,
     pub max_wip: usize,
     next_job_id: u64,
     was_back_pressured: bool,
     pending_chip_evacs: HashSet<MillId>,
+    pub pending_prep_deliveries: VecDeque<PrepItem>,
 }
 
 impl Default for Scheduler {
@@ -51,10 +53,12 @@ impl Default for Scheduler {
             jobs_dispatched: 0,
             back_pressure_events: 0,
             chip_evacs_dispatched: 0,
+            work_prep_deliveries: 0,
             max_wip: DEFAULT_MAX_WIP,
             next_job_id: 1,
             was_back_pressured: false,
             pending_chip_evacs: HashSet::new(),
+            pending_prep_deliveries: VecDeque::new(),
         }
     }
 }
@@ -81,6 +85,7 @@ impl Scheduler {
     }
 
     /// Main scheduling tick. Returns events to schedule.
+    #[allow(clippy::too_many_arguments)]
     pub fn tick(
         &mut self,
         now: SimTime,
@@ -89,25 +94,38 @@ impl Scheduler {
         tool_crib: &mut ToolCrib,
         pallet_mag: &mut PalletMagazine,
         lanes: &mut LaneNetwork,
+        work_prep: &WorkPrepStation,
     ) -> Vec<TimedEvent> {
         let mut events = Vec::new();
 
-        // ── 1. Assign jobs to idle mills ────────────────────────────
-        self.dispatch_jobs(now, mills, agvs, tool_crib, pallet_mag, lanes, &mut events);
+        // ── 1. Deliver prepared workpieces to mills (priority) ──────
+        self.dispatch_prep_deliveries(now, agvs, lanes, &mut events);
 
-        // ── 2. Dispatch chip evacuations ────────────────────────────
+        // ── 2. Assign jobs to idle mills ────────────────────────────
+        self.dispatch_jobs(
+            now,
+            mills,
+            agvs,
+            tool_crib,
+            pallet_mag,
+            lanes,
+            work_prep,
+            &mut events,
+        );
+
+        // ── 3. Dispatch chip evacuations ────────────────────────────
         self.dispatch_chip_evacs(now, mills, agvs, lanes, &mut events);
 
-        // ── 3. Advance blocked AGVs ─────────────────────────────────
+        // ── 4. Advance blocked AGVs ─────────────────────────────────
         self.try_advance_agvs(now, agvs, lanes, &mut events);
 
-        // ── 4. Look-ahead pre-staging ───────────────────────────────
+        // ── 5. Look-ahead pre-staging ───────────────────────────────
         self.look_ahead_stage(tool_crib, pallet_mag);
 
-        // ── 5. Deadlock detection ───────────────────────────────────
+        // ── 6. Deadlock detection ───────────────────────────────────
         self.detect_and_resolve_deadlocks(now, agvs, lanes, &mut events);
 
-        // ── 6. Schedule next tick ───────────────────────────────────
+        // ── 7. Schedule next tick ───────────────────────────────────
         events.push(TimedEvent {
             time: now + SCHEDULER_INTERVAL,
             event: Event::SchedulerTick,
@@ -132,6 +150,53 @@ impl Scheduler {
         self.pending_chip_evacs.remove(&mill_id);
     }
 
+    // ── Prepared workpiece delivery (work prep → mill spur) ────────
+    fn dispatch_prep_deliveries(
+        &mut self,
+        now: SimTime,
+        agvs: &mut [Agv],
+        lanes: &LaneNetwork,
+        events: &mut Vec<TimedEvent>,
+    ) {
+        while let Some(delivery) = self.pending_prep_deliveries.front() {
+            let dest_spur = mill_spur(delivery.mill_id);
+            let agv_opt = agvs.iter().find(|a| a.is_idle() && a.can_enter_spur());
+            let Some(agv) = agv_opt else { break };
+            let agv_id = agv.id;
+
+            let delivery = self.pending_prep_deliveries.pop_front().unwrap();
+            if let Some(path) = lanes.route(agvs[agv_id].segment, dest_spur) {
+                agvs[agv_id].cargo = Cargo::Workpiece {
+                    job_id: delivery.job_id,
+                    op_index: delivery.op_index,
+                };
+                agvs[agv_id].path = path;
+                agvs[agv_id].path_cursor = 0;
+
+                if let Some(&seg) = agvs[agv_id].path.first() {
+                    agvs[agv_id].state = AgvState::Traveling;
+                    events.push(TimedEvent {
+                        time: now + agvs[agv_id].travel_time(),
+                        event: Event::AgvArrived {
+                            agv_id,
+                            segment: seg,
+                        },
+                    });
+                } else {
+                    agvs[agv_id].state = AgvState::Unloading;
+                    events.push(TimedEvent {
+                        time: now + MILL_LOAD_TIME,
+                        event: Event::AgvUnloadDone { agv_id },
+                    });
+                }
+                self.work_prep_deliveries += 1;
+            } else {
+                self.pending_prep_deliveries.push_front(delivery);
+                break;
+            }
+        }
+    }
+
     // ── Job dispatch ────────────────────────────────────────────────
     #[allow(clippy::too_many_arguments)]
     fn dispatch_jobs(
@@ -142,6 +207,7 @@ impl Scheduler {
         tool_crib: &mut ToolCrib,
         pallet_mag: &mut PalletMagazine,
         lanes: &LaneNetwork,
+        work_prep: &WorkPrepStation,
         events: &mut Vec<TimedEvent>,
     ) {
         let mut assigned = Vec::new();
@@ -163,6 +229,11 @@ impl Scheduler {
                 continue;
             }
             let op = &job.operations[0];
+
+            // Don't flood the work prep station.
+            if work_prep.total_items() + self.pending_prep_deliveries.len() >= WORK_PREP_MAX_QUEUE {
+                break;
+            }
 
             // Find an idle mill that already has the right tool (prefer),
             // or any idle mill.
@@ -189,20 +260,14 @@ impl Scheduler {
                 continue; // pallet not available
             }
 
-            // Find an idle vehicle. Spur deliveries require an AGV;
-            // AMRs are restricted to the main loop.
-            let dest_spur = mill_spur(mid);
-            let needs_spur = dest_spur >= SPUR_BASE;
-            let agv_opt = agvs
-                .iter()
-                .find(|a| a.is_idle() && (!needs_spur || a.can_enter_spur()));
+            // First leg goes to WORK_PREP_SEG (on loop), any vehicle works.
+            let agv_opt = agvs.iter().find(|a| a.is_idle());
             let Some(agv) = agv_opt else { break };
             let agv_id = agv.id;
 
             // Reserve resources.
             if need_tool {
                 tool_crib.checkout(op.tool_set);
-                // Return the old tool if any.
                 if let Some(old) = mills[mid].loaded_tool {
                     tool_crib.checkin(old);
                 }
@@ -218,24 +283,30 @@ impl Scheduler {
             mills[mid].loaded_pallet_type = Some(op.pallet_type);
             mills[mid].begin_loading();
 
-            // Dispatch vehicle to carry workpiece to mill.
-            if let Some(path) = lanes.route(agvs[agv_id].segment, dest_spur) {
-                agvs[agv_id].state = AgvState::Traveling;
-                agvs[agv_id].cargo = Cargo::Workpiece {
+            // Dispatch vehicle to carry raw pallet to work prep station.
+            if let Some(path) = lanes.route(agvs[agv_id].segment, WORK_PREP_SEG) {
+                agvs[agv_id].cargo = Cargo::PrepPallet {
                     job_id: job.id,
                     op_index: 0,
+                    mill_id: mid,
                 };
                 agvs[agv_id].path = path;
                 agvs[agv_id].path_cursor = 0;
 
-                // Schedule first move.
                 if let Some(&seg) = agvs[agv_id].path.first() {
+                    agvs[agv_id].state = AgvState::Traveling;
                     events.push(TimedEvent {
                         time: now + agvs[agv_id].travel_time(),
                         event: Event::AgvArrived {
                             agv_id,
                             segment: seg,
                         },
+                    });
+                } else {
+                    agvs[agv_id].state = AgvState::Unloading;
+                    events.push(TimedEvent {
+                        time: now + MILL_LOAD_TIME,
+                        event: Event::AgvUnloadDone { agv_id },
                     });
                 }
             }
@@ -331,20 +402,26 @@ impl Scheduler {
             }
             if let Some(seg) = agvs[aid].next_segment() {
                 if lanes.claim(seg, agvs[aid].id) {
-                    // Release previous segment.
                     lanes.release(agvs[aid].segment);
                     agvs[aid].advance();
-                    agvs[aid].state = AgvState::Traveling;
                     self.wait_graph.remove(agvs[aid].id);
-                    // Schedule next hop.
-                    if let Some(next) = agvs[aid].next_segment() {
+                    if agvs[aid].at_destination() {
+                        agvs[aid].state = AgvState::Unloading;
                         events.push(TimedEvent {
-                            time: now + agvs[aid].travel_time(),
-                            event: Event::AgvArrived {
-                                agv_id: aid,
-                                segment: next,
-                            },
+                            time: now + MILL_LOAD_TIME,
+                            event: Event::AgvUnloadDone { agv_id: aid },
                         });
+                    } else {
+                        agvs[aid].state = AgvState::Traveling;
+                        if let Some(next) = agvs[aid].next_segment() {
+                            events.push(TimedEvent {
+                                time: now + agvs[aid].travel_time(),
+                                event: Event::AgvArrived {
+                                    agv_id: aid,
+                                    segment: next,
+                                },
+                            });
+                        }
                     }
                 }
             }

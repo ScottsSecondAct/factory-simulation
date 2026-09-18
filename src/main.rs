@@ -21,7 +21,7 @@ use std::env;
 
 use factory_sim::agv::{Agv, LaneNetwork};
 use factory_sim::engine::{Event, SimEngine, TimedEvent};
-use factory_sim::factory::{Mill, PalletMagazine, ToolCrib};
+use factory_sim::factory::{Mill, PalletMagazine, PrepItem, ToolCrib, WorkPrepStation};
 use factory_sim::fault::{FaultConfig, FaultInjector};
 use factory_sim::ipc::{IpcConfig, IpcRunner};
 use factory_sim::metrics::Metrics;
@@ -37,6 +37,7 @@ struct World {
     pallet_mag: PalletMagazine,
     scheduler: Scheduler,
     fault_inj: FaultInjector,
+    work_prep: WorkPrepStation,
     metrics: Metrics,
     rng: StdRng,
 }
@@ -69,6 +70,7 @@ impl World {
             pallet_mag: PalletMagazine::new(4, 8),
             scheduler: Scheduler::new(),
             fault_inj: FaultInjector::new(fault_cfg),
+            work_prep: WorkPrepStation::new(),
             metrics: Metrics::new(60.0),
             rng: StdRng::seed_from_u64(42),
         }
@@ -181,6 +183,31 @@ impl World {
                             event: Event::ChipEvacDone(*mid),
                         });
                     }
+                    Cargo::PrepPallet {
+                        job_id,
+                        op_index,
+                        mill_id,
+                    } => {
+                        let item = PrepItem {
+                            job_id: *job_id,
+                            op_index: *op_index,
+                            mill_id: *mill_id,
+                        };
+                        self.work_prep.enqueue(item);
+                        if let Some((prep_item, gen)) = self.work_prep.try_start() {
+                            let prep_time = WORK_PREP_TIME_MIN
+                                + self.rng.gen::<f64>() * (WORK_PREP_TIME_MAX - WORK_PREP_TIME_MIN);
+                            out.push(TimedEvent {
+                                time: now + prep_time,
+                                event: Event::WorkPrepDone {
+                                    job_id: prep_item.job_id,
+                                    op_index: prep_item.op_index,
+                                    mill_id: prep_item.mill_id,
+                                    gen,
+                                },
+                            });
+                        }
+                    }
                     _ => {}
                 }
                 self.agvs[*agv_id].cargo = Cargo::Empty;
@@ -194,6 +221,42 @@ impl World {
                 self.mills[*mid].finish_chip_evac();
                 self.scheduler.clear_pending_chip_evac(*mid);
                 eprintln!("[{now:.1}s] CHIP-EVAC: mill {mid} chips cleared");
+            }
+
+            Event::WorkPrepDone {
+                job_id,
+                op_index: _,
+                mill_id,
+                gen,
+            } => {
+                if *gen != self.work_prep.current_generation()
+                    || self.work_prep.state != WorkPrepState::Processing
+                {
+                    // Stale event (station faulted and restarted since this was scheduled)
+                } else if let Some(item) = self.work_prep.finish_processing() {
+                    self.scheduler.pending_prep_deliveries.push_back(PrepItem {
+                        job_id: item.job_id,
+                        op_index: item.op_index,
+                        mill_id: item.mill_id,
+                    });
+                    eprintln!(
+                        "[{now:.1}s] WORK-PREP: job {} ready for mill {}",
+                        job_id, mill_id
+                    );
+                    if let Some((next_item, next_gen)) = self.work_prep.try_start() {
+                        let prep_time = WORK_PREP_TIME_MIN
+                            + self.rng.gen::<f64>() * (WORK_PREP_TIME_MAX - WORK_PREP_TIME_MIN);
+                        out.push(TimedEvent {
+                            time: now + prep_time,
+                            event: Event::WorkPrepDone {
+                                job_id: next_item.job_id,
+                                op_index: next_item.op_index,
+                                mill_id: next_item.mill_id,
+                                gen: next_gen,
+                            },
+                        });
+                    }
+                }
             }
 
             Event::FaultOccur(target) => {
@@ -210,6 +273,10 @@ impl World {
                             "AGV"
                         };
                         eprintln!("[{now:.1}s] FAULT: {label} {aid} down");
+                    }
+                    FaultTarget::WorkPrep => {
+                        self.work_prep.fault(now);
+                        eprintln!("[{now:.1}s] FAULT: Work prep station down");
                     }
                 }
                 out.push(self.fault_inj.schedule_repair(now, target));
@@ -229,6 +296,23 @@ impl World {
                         };
                         eprintln!("[{now:.1}s] REPAIR: {label} {aid} back online");
                     }
+                    FaultTarget::WorkPrep => {
+                        self.work_prep.repair(now);
+                        eprintln!("[{now:.1}s] REPAIR: Work prep station back online");
+                        if let Some((item, gen)) = self.work_prep.try_start() {
+                            let prep_time = WORK_PREP_TIME_MIN
+                                + self.rng.gen::<f64>() * (WORK_PREP_TIME_MAX - WORK_PREP_TIME_MIN);
+                            out.push(TimedEvent {
+                                time: now + prep_time,
+                                event: Event::WorkPrepDone {
+                                    job_id: item.job_id,
+                                    op_index: item.op_index,
+                                    mill_id: item.mill_id,
+                                    gen,
+                                },
+                            });
+                        }
+                    }
                 }
                 out.push(
                     self.fault_inj
@@ -247,6 +331,7 @@ impl World {
                     &mut self.tool_crib,
                     &mut self.pallet_mag,
                     &mut self.lanes,
+                    &self.work_prep,
                 );
                 out.extend(sched_events);
             }
@@ -450,6 +535,7 @@ fn main() {
         eprintln!("Deadlocks detected: {}", summary.deadlocks_detected);
         eprintln!("Back-pressure:      {}", summary.back_pressure_events);
         eprintln!("Chip evacuations:   {}", summary.chip_evacuations);
+        eprintln!("Work prep jobs:     {}", summary.work_prep_jobs);
         eprintln!("Equipment faults:   {}", summary.total_faults);
         eprintln!(
             "Throughput:         {:.1} parts/hr",

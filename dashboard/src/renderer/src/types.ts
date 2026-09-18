@@ -25,6 +25,8 @@ export type AgvState =
   | "Blocked"
   | "Faulted";
 
+export type WorkPrepState = "Idle" | "Processing" | "Faulted";
+
 export type Priority = "Critical" | "High" | "Normal" | "Low";
 
 export type VehicleType = "Agv" | "Amr";
@@ -56,7 +58,7 @@ export interface MillLayout {
 
 export interface FactoryLayout {
   mills: MillLayout[];
-  stations: { tool_crib: SegmentId; pallet_magazine: SegmentId; chip_station: SegmentId };
+  stations: { tool_crib: SegmentId; pallet_magazine: SegmentId; chip_station: SegmentId; work_prep: SegmentId };
 }
 
 export interface MillSnap {
@@ -117,6 +119,9 @@ export interface MetricsSnap {
   max_wip: number;
   back_pressure_events: number;
   chip_evacuations: number;
+  work_prep_jobs: number;
+  work_prep_queue: number;
+  work_prep_state: WorkPrepState;
 }
 
 export interface Snapshot {
@@ -159,6 +164,7 @@ export interface SummaryMessage {
   total_faults: number;
   back_pressure_events: number;
   chip_evacuations: number;
+  work_prep_jobs: number;
   mill_utilization: number[];
   avg_utilization: number;
   avg_queue_depth: number;

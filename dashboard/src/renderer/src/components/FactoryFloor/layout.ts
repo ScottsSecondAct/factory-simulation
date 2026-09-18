@@ -9,7 +9,7 @@ export interface FloorLayout {
   loopPoints: Point[];
   millPositions: Point[];
   spurLines: { from: Point; to: Point; seg: SegmentId }[];
-  stationPositions: { toolCrib: Point; palletMag: Point };
+  stationPositions: { toolCrib: Point; palletMag: Point; workPrep: Point };
   loopSegments: number;
 }
 
@@ -51,6 +51,7 @@ export function computeFloorLayout(layout: FactoryLayout): FloorLayout {
 
   const tcSeg = layout.stations.tool_crib;
   const pmSeg = layout.stations.pallet_magazine;
+  const wpSeg = layout.stations.work_prep;
 
   return {
     loopPoints,
@@ -59,6 +60,7 @@ export function computeFloorLayout(layout: FactoryLayout): FloorLayout {
     stationPositions: {
       toolCrib: loopPoints[tcSeg] || { x: 0, y: 0 },
       palletMag: loopPoints[pmSeg] || { x: VIEW_W, y: VIEW_H },
+      workPrep: loopPoints[wpSeg] || { x: VIEW_W / 2, y: VIEW_H },
     },
     loopSegments: loopSegs,
   };

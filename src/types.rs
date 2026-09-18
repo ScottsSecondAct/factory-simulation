@@ -45,6 +45,10 @@ pub const CHIP_CAPACITY: f64 = 100.0;
 pub const CHIP_RATE: f64 = 0.05; // chip units per second of machining
 pub const CHIP_EVAC_TIME: SimTime = 60.0;
 pub const CHIP_STATION_SEG: SegmentId = 5;
+pub const WORK_PREP_SEG: SegmentId = 15;
+pub const WORK_PREP_TIME_MIN: SimTime = 60.0;
+pub const WORK_PREP_TIME_MAX: SimTime = 120.0;
+pub const WORK_PREP_MAX_QUEUE: usize = 4;
 
 // ── Mill state machine ──────────────────────────────────────────────
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -58,6 +62,14 @@ pub enum MillState {
     ToolChange,
     Faulted,
     ChipFull,
+}
+
+// ── Work prep station state machine ────────────────────────────────
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum WorkPrepState {
+    Idle,
+    Processing,
+    Faulted,
 }
 
 // ── AGV state machine ───────────────────────────────────────────────
@@ -84,8 +96,16 @@ pub enum Cargo {
     Empty,
     Pallet(PalletId),
     ToolSet(ToolSetId),
-    Workpiece { job_id: JobId, op_index: usize },
+    Workpiece {
+        job_id: JobId,
+        op_index: usize,
+    },
     ChipBin(MillId),
+    PrepPallet {
+        job_id: JobId,
+        op_index: usize,
+        mill_id: MillId,
+    },
 }
 
 // ── Job priority ────────────────────────────────────────────────────
@@ -119,6 +139,7 @@ pub struct Job {
 pub enum FaultTarget {
     Mill(MillId),
     Agv(AgvId),
+    WorkPrep,
 }
 
 // ── Loop segment → spur mapping ─────────────────────────────────────

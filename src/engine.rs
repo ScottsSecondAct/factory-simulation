@@ -52,6 +52,14 @@ pub enum Event {
     // Chip evacuation
     ChipEvacDone(MillId),
 
+    // Work preparation
+    WorkPrepDone {
+        job_id: JobId,
+        op_index: usize,
+        mill_id: MillId,
+        gen: u64,
+    },
+
     // Faults
     FaultOccur(FaultTarget),
     FaultRepair(FaultTarget),

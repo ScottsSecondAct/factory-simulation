@@ -28,6 +28,10 @@ pub struct FaultConfig {
     pub amr_mtbf: SimTime,
     /// AMR repair duration (seconds).
     pub amr_repair: SimTime,
+    /// Mean time between work prep station failures (seconds).
+    pub work_prep_mtbf: SimTime,
+    /// Work prep station repair duration (seconds).
+    pub work_prep_repair: SimTime,
     /// Number of AMRs in the fleet.
     pub num_amrs: usize,
     /// Master enable: set false to run fault-free.
@@ -37,12 +41,14 @@ pub struct FaultConfig {
 impl Default for FaultConfig {
     fn default() -> Self {
         Self {
-            mill_mtbf: 28_800.0,  // ~8 hours
-            mill_repair: 1_800.0, // 30 minutes
-            agv_mtbf: 43_200.0,   // ~12 hours
-            agv_repair: 900.0,    // 15 minutes
-            amr_mtbf: 57_600.0,   // ~16 hours (more reliable than AGVs)
-            amr_repair: 600.0,    // 10 minutes (simpler to repair)
+            mill_mtbf: 28_800.0,      // ~8 hours
+            mill_repair: 1_800.0,     // 30 minutes
+            agv_mtbf: 43_200.0,       // ~12 hours
+            agv_repair: 900.0,        // 15 minutes
+            amr_mtbf: 57_600.0,       // ~16 hours (more reliable than AGVs)
+            amr_repair: 600.0,        // 10 minutes (simpler to repair)
+            work_prep_mtbf: 57_600.0, // ~16 hours
+            work_prep_repair: 600.0,  // 10 minutes
             num_amrs: DEFAULT_NUM_AMRS,
             enabled: true,
         }
@@ -92,6 +98,13 @@ impl FaultInjector {
                 event: Event::FaultOccur(FaultTarget::Agv(id)),
             });
         }
+        {
+            let t = self.exp_sample(rng, self.config.work_prep_mtbf);
+            events.push(TimedEvent {
+                time: t,
+                event: Event::FaultOccur(FaultTarget::WorkPrep),
+            });
+        }
         events
     }
 
@@ -111,6 +124,7 @@ impl FaultInjector {
                     self.config.agv_repair
                 }
             }
+            FaultTarget::WorkPrep => self.config.work_prep_repair,
         };
         TimedEvent {
             time: now + repair_time,
@@ -134,6 +148,7 @@ impl FaultInjector {
                     self.config.agv_mtbf
                 }
             }
+            FaultTarget::WorkPrep => self.config.work_prep_mtbf,
         };
         TimedEvent {
             time: now + self.exp_sample(rng, mtbf),

@@ -79,6 +79,28 @@ export function FactoryFloor({ layout }: Props) {
             PALLETS
           </text>
         </g>
+        <g>
+          <rect
+            x={fl.stationPositions.workPrep.x - 14}
+            y={fl.stationPositions.workPrep.y - 8}
+            width={28}
+            height={16}
+            rx={3}
+            fill="#3b1f5e"
+            stroke="#a78bfa"
+            strokeWidth={1}
+          />
+          <text
+            x={fl.stationPositions.workPrep.x}
+            y={fl.stationPositions.workPrep.y + 4}
+            textAnchor="middle"
+            fill="#a78bfa"
+            fontSize={6}
+            fontWeight={600}
+          >
+            PREP
+          </text>
+        </g>
 
         <MillGrid
           mills={snapshot.mills}

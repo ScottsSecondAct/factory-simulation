@@ -5,7 +5,7 @@
 //! the scheduler must account for when assigning work.
 
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use crate::types::*;
 
@@ -113,6 +113,96 @@ impl Mill {
             self.fault_time += now - start;
         }
         self.state = MillState::Idle;
+    }
+}
+
+// ── Work Preparation Station ────────────────────────────────────────
+/// A queued item awaiting robotic billet loading.
+#[derive(Debug, Clone, Serialize)]
+pub struct PrepItem {
+    pub job_id: JobId,
+    pub op_index: usize,
+    pub mill_id: MillId,
+}
+
+/// Single-server robotic station that clamps raw billets onto pallet
+/// fixtures before they are delivered to a mill for machining.
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkPrepStation {
+    pub queue: VecDeque<PrepItem>,
+    pub processing: Option<PrepItem>,
+    pub state: WorkPrepState,
+    pub jobs_completed: u64,
+    pub fault_time: SimTime,
+    #[serde(skip)]
+    fault_start: Option<SimTime>,
+    generation: u64,
+}
+
+impl Default for WorkPrepStation {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WorkPrepStation {
+    pub fn new() -> Self {
+        Self {
+            queue: VecDeque::new(),
+            processing: None,
+            state: WorkPrepState::Idle,
+            jobs_completed: 0,
+            fault_time: 0.0,
+            fault_start: None,
+            generation: 0,
+        }
+    }
+
+    pub fn enqueue(&mut self, item: PrepItem) {
+        self.queue.push_back(item);
+    }
+
+    /// If idle and queue non-empty, start processing the next item.
+    /// Returns the item reference and a generation tag for the event.
+    pub fn try_start(&mut self) -> Option<(&PrepItem, u64)> {
+        if self.state != WorkPrepState::Idle || self.queue.is_empty() {
+            return None;
+        }
+        self.processing = self.queue.pop_front();
+        self.state = WorkPrepState::Processing;
+        self.generation += 1;
+        Some((self.processing.as_ref().unwrap(), self.generation))
+    }
+
+    /// Complete the current processing item.
+    pub fn finish_processing(&mut self) -> Option<PrepItem> {
+        self.jobs_completed += 1;
+        self.state = WorkPrepState::Idle;
+        self.processing.take()
+    }
+
+    pub fn current_generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Total items in the station (queued + processing).
+    pub fn total_items(&self) -> usize {
+        self.queue.len() + usize::from(self.processing.is_some())
+    }
+
+    pub fn fault(&mut self, now: SimTime) {
+        if let Some(item) = self.processing.take() {
+            self.queue.push_front(item);
+        }
+        self.state = WorkPrepState::Faulted;
+        self.fault_start = Some(now);
+    }
+
+    pub fn repair(&mut self, now: SimTime) {
+        if let Some(start) = self.fault_start.take() {
+            self.fault_time += now - start;
+        }
+        self.state = WorkPrepState::Idle;
     }
 }
 
