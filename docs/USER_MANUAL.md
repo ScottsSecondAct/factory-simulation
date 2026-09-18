@@ -2,7 +2,7 @@
 
 ## 1. Introduction
 
-The Factory Orchestration Simulator is a discrete-event simulation of a flexible manufacturing system (FMS). It models the complete operational behavior of a factory floor: CNC milling machines processing jobs, automated guided vehicles (AGVs) transporting materials, a centralized tool crib issuing cutting tool sets, a pallet magazine dispensing workholding fixtures, and a scheduling engine that coordinates all of these resources under realistic constraints including equipment failures and traffic deadlocks.
+The Factory Orchestration Simulator is a discrete-event simulation of a flexible manufacturing system (FMS). It models the complete operational behavior of a factory floor: CNC milling machines processing jobs, a heterogeneous fleet of automated guided vehicles (AGVs) and autonomous mobile robots (AMRs) transporting materials, a centralized tool crib issuing cutting tool sets, a pallet magazine dispensing workholding fixtures, and a scheduling engine that coordinates all of these resources under realistic constraints including WIP admission control, equipment failures, and traffic deadlocks.
 
 The simulator is written in Rust for performance and correctness, and includes an Electron-based dashboard for real-time visualization and interactive control. The two communicate over a bidirectional JSON-lines protocol on standard I/O.
 
@@ -14,8 +14,8 @@ This is not an animation or a visualization layer on top of static data. It is a
 
 - **Factory automation engineering**: Evaluate scheduling algorithms, fleet sizing, and resource pool configurations before committing to physical hardware.
 - **Education**: Study discrete-event simulation, finite state machines, deadlock detection, and material handling system design in a realistic setting.
-- **What-if analysis**: Compare fault tolerance under different MTBF profiles, test the impact of adding or removing machines, or explore how queue arrival rates affect throughput.
-- **Algorithm development**: Use as a testbed for new scheduling heuristics, AGV routing strategies, or predictive maintenance policies.
+- **What-if analysis**: Compare fault tolerance under different MTBF profiles, test the impact of adding or removing machines, explore how queue arrival rates affect throughput, or tune WIP limits and fleet composition.
+- **Algorithm development**: Use as a testbed for new scheduling heuristics, AGV/AMR routing strategies, or predictive maintenance policies.
 
 ---
 
@@ -76,11 +76,11 @@ Mill rows attach to the loop at specific segments:
     Pallet Magazine (seg 10)
 ```
 
-Routing uses **BFS shortest-path** on the bidirectional graph. AGVs can traverse the loop in either direction, choosing the shorter arc to reach their destination.
+Routing uses **BFS shortest-path** on the bidirectional graph. AGVs can traverse the loop in either direction, choosing the shorter arc to reach their destination. AMRs use a restricted BFS that excludes spur segments.
 
 ### 2.3 Segment Mutual Exclusion
 
-Each lane segment holds **at most one AGV** at any time. This is the fundamental concurrency constraint: when an AGV wants to enter a segment already occupied by another AGV, it blocks and waits. This segment-level mutual exclusion is what makes the deadlock detection system necessary.
+Each lane segment holds **at most one vehicle** at any time. This is the fundamental concurrency constraint: when a vehicle wants to enter a segment already occupied by another vehicle, it blocks and waits. This segment-level mutual exclusion is what makes the deadlock detection and idle-vehicle yielding systems necessary.
 
 ---
 
@@ -119,28 +119,42 @@ Idle → Loading → Machining → Unloading → Idle
 Any state → Faulted → Idle (on repair) ───┘
 ```
 
-### 3.2 Automated Guided Vehicle (AGV)
+### 3.2 Vehicle Fleet (AGVs and AMRs)
 
-The factory has **6 AGVs** that transport workpieces, tool sets, and pallet fixtures between stations and mills. Each AGV is modeled as a finite state machine with 6 states:
+The factory operates a **heterogeneous fleet** of vehicles: **6 AGVs** and **2 AMRs** (configurable via `--num-amrs`). Both vehicle types share the same finite state machine with 6 states, but differ in speed, routing capability, and fault characteristics.
 
 | State | Description |
 |---|---|
 | **Idle** | Parked at a segment, available for dispatch. |
-| **Traveling** | Moving along a path, one segment at a time. Travel time: **8 seconds per segment**. |
+| **Traveling** | Moving along a path, one segment at a time. |
 | **Loading** | Picking up cargo at a station. |
 | **Unloading** | Delivering cargo at a mill spur. Duration: **45 seconds**. |
-| **Blocked** | Wants to enter a segment that is occupied by another AGV. Waiting for it to clear. |
+| **Blocked** | Wants to enter a segment that is occupied by another vehicle. Waiting for it to clear. |
 | **Faulted** | Vehicle breakdown. Cannot move or carry cargo until repaired. |
 
-**AGV cargo types:**
+**Vehicle type differences:**
+
+| Property | AGV | AMR |
+|---|---|---|
+| Travel time per segment | 8 seconds | 6 seconds |
+| Can enter spur segments | Yes | No (main loop only) |
+| MTBF | 43,200s (12 hours) | 57,600s (16 hours) |
+| Repair duration | 900s (15 minutes) | 600s (10 minutes) |
+| ID range | 0–5 | 6+ (starting after AGVs) |
+
+AMRs are faster and more reliable, but because they cannot enter spur segments, they cannot deliver workpieces directly to mills. The scheduler only dispatches AGVs for missions that require spur access (which currently includes all mill deliveries). AMRs participate in lane network traffic and are available for future loop-based transport tasks.
+
+**Vehicle cargo types:**
 - `Empty` — no cargo
 - `Pallet(id)` — carrying a specific pallet fixture
 - `ToolSet(id)` — carrying a specific tool set
 - `Workpiece { job_id, op_index }` — carrying a workpiece for a specific job and operation
 
-**Initial positions:** AGVs start distributed around the loop at segments 0, 3, 6, 9, 12, and 15 (computed as `(id × 3) % 20`).
+**Initial positions:** AGVs start distributed around the loop at segments 0, 3, 6, 9, 12, and 15 (computed as `(id × 3) % 20`). AMRs are placed at offset positions to avoid collisions (computed as `((NUM_AGVS + i) × 3 + 1) % 20`).
 
-**Tracked metrics per AGV:**
+**Idle-vehicle yielding:** When an active vehicle is blocked by an idle vehicle (AGV or AMR), the scheduler moves the idle vehicle to the nearest free loop segment via BFS. This prevents permanently parked vehicles from creating impassable bottlenecks on the loop.
+
+**Tracked metrics per vehicle:**
 - `distance_traveled` — total segments traversed
 - `loads_delivered` — total cargo deliveries completed
 
@@ -195,19 +209,24 @@ The scheduler runs on a **5-second periodic heartbeat** (`SchedulerTick`). Each 
 
 ### 4.1 Phase 1: Job Dispatch
 
-The scheduler scans the job queue front-to-back and attempts to assign each job to a mill:
+The scheduler scans the job queue front-to-back and attempts to assign each job to a mill. Before each dispatch, the scheduler enforces **WIP admission control**: if the number of mills actively processing work (not Idle and not Faulted) has reached the configurable `max_wip` limit (default: 20), dispatch is suspended and a back-pressure event is recorded. Dispatch resumes automatically when WIP drops below the limit. Back-pressure state transitions are logged to stderr (only on the transition into and out of back-pressure, not every tick).
 
-1. **Find an idle mill.** Prefer a mill that already has the correct tool set loaded (avoids a 120-second tool change).
-2. **Check resource availability.** Verify the required tool set has copies in the crib and the required pallet type is available in the magazine.
-3. **Find an idle AGV.** If no AGV is free, dispatch pauses (remaining jobs wait).
-4. **Reserve resources.** Check out the tool set, take the pallet, start a tool change if needed.
-5. **Dispatch AGV.** Compute the shortest path from the AGV's current position to the mill's spur segment and begin movement.
+For each job:
 
-Multiple jobs can be dispatched in a single tick if resources and AGVs are available.
+1. **Check WIP limit.** If WIP ≥ `max_wip`, stop dispatching (back-pressure).
+2. **Find an idle mill.** Prefer a mill that already has the correct tool set loaded (avoids a 120-second tool change).
+3. **Check resource availability.** Verify the required tool set has copies in the crib and the required pallet type is available in the magazine.
+4. **Find an idle vehicle.** Spur deliveries require an AGV (AMRs cannot enter spurs). If no suitable vehicle is free, dispatch pauses.
+5. **Reserve resources.** Check out the tool set, take the pallet, start a tool change if needed.
+6. **Dispatch vehicle.** Compute the shortest path from the vehicle's current position to the mill's spur segment and begin movement. The travel time per segment depends on the vehicle type (8s for AGVs, 6s for AMRs).
 
-### 4.2 Phase 2: Blocked AGV Advancement
+Multiple jobs can be dispatched in a single tick if resources and vehicles are available.
 
-The scheduler checks all blocked AGVs and attempts to advance them. If the segment an AGV is waiting for has become free, the AGV claims it, releases its previous segment, and continues traveling.
+### 4.2 Phase 2: Blocked Vehicle Advancement
+
+The scheduler first runs **idle-vehicle yielding**: for each blocked vehicle, if the segment it needs is held by an idle vehicle, the idle vehicle is moved to the nearest free loop segment (found via BFS). This prevents permanently parked AMRs or idle AGVs from creating impassable bottlenecks.
+
+After yielding, the scheduler checks all blocked vehicles and attempts to advance them. If the segment a vehicle is waiting for has become free, the vehicle claims it, releases its previous segment, and continues traveling.
 
 ### 4.3 Phase 3: Look-Ahead Pre-Staging
 
@@ -226,7 +245,7 @@ If the graph contains a **cycle**, a deadlock has occurred (circular wait). The 
 
 ## 5. Fault Injection
 
-The simulator models **stochastic equipment failures** for both mills and AGVs using an exponential distribution for time-between-failures.
+The simulator models **stochastic equipment failures** for mills, AGVs, and AMRs using an exponential distribution for time-between-failures.
 
 ### 5.1 Fault Parameters
 
@@ -236,11 +255,15 @@ The simulator models **stochastic equipment failures** for both mills and AGVs u
 | Mill repair duration | 1,800s (30 minutes) | Fixed time to repair a faulted mill |
 | AGV MTBF | 43,200s (12 hours) | Mean time between AGV failures |
 | AGV repair duration | 900s (15 minutes) | Fixed time to repair a faulted AGV |
+| AMR MTBF | 57,600s (16 hours) | Mean time between AMR failures |
+| AMR repair duration | 600s (10 minutes) | Fixed time to repair a faulted AMR |
+
+AMRs are more reliable than AGVs (higher MTBF) and faster to repair, reflecting their simpler mechanical design (no guide-wire infrastructure, fewer wear components).
 
 ### 5.2 Fault Lifecycle
 
-1. **Seed**: At simulation start, an initial fault time is drawn from `Exp(MTBF)` for every piece of equipment (25 mills + 6 AGVs = 31 initial fault events).
-2. **Occur**: When the fault event fires, the equipment transitions to the `Faulted` state. It stops processing work immediately. A repair event is scheduled at `now + repair_duration`.
+1. **Seed**: At simulation start, an initial fault time is drawn from `Exp(MTBF)` for every piece of equipment (25 mills + 6 AGVs + 2 AMRs = 33 initial fault events by default).
+2. **Occur**: When the fault event fires, the equipment transitions to the `Faulted` state. It stops processing work immediately. A repair event is scheduled at `now + repair_duration` (using the vehicle-type-specific repair time for AGVs and AMRs).
 3. **Repair**: The equipment returns to `Idle`. A new fault event is scheduled at `now + Exp(MTBF)`, continuing the failure cycle for the rest of the simulation.
 
 ### 5.3 Disabling Faults
@@ -274,7 +297,7 @@ There is **no real-time clock**. Simulated time advances discretely from event t
 | `MillMachiningDone` | 300–900s after machining begins | Mill transitions to Unloading |
 | `MillUnloadDone` | 45s after unloading begins | Pallet returned, mill becomes Idle |
 | `ToolChangeDone` | 120s after tool change begins | Mill returns to Idle with new tool |
-| `AgvArrived` | 8s per segment hop | AGV enters next segment (or blocks) |
+| `AgvArrived` | 8s (AGV) or 6s (AMR) per segment hop | Vehicle enters next segment (or blocks) |
 | `AgvLoadDone` | After pickup | AGV begins traveling with cargo |
 | `AgvUnloadDone` | 45s after arriving at mill spur | Cargo delivered, AGV becomes Idle |
 | `FaultOccur` | Exp(MTBF) | Equipment faults; repair scheduled |
@@ -296,9 +319,9 @@ Understanding the simulator's assumptions is important for interpreting its resu
 
 3. **Instantaneous tool changes at the crib.** Tool checkout and checkin at the crib are immediate. The 120-second delay models the tool change at the mill spindle, not transportation from the crib.
 
-4. **Simplified AGV routing.** AGVs use BFS shortest-path without congestion awareness. They do not reroute dynamically when encountering traffic. If blocked, they wait or are resolved by the deadlock detector.
+4. **Simplified vehicle routing.** Vehicles use BFS shortest-path without congestion awareness. They do not reroute dynamically when encountering traffic. If blocked, they wait, are yielded past by idle vehicles, or are resolved by the deadlock detector.
 
-5. **No AGV battery model.** AGVs operate continuously without charging or energy constraints.
+5. **No vehicle battery model.** AGVs and AMRs operate continuously without charging or energy constraints.
 
 6. **Fixed repair durations.** Equipment repairs take a fixed time regardless of failure mode. Real repairs vary by diagnosis complexity and part availability.
 
@@ -306,7 +329,7 @@ Understanding the simulator's assumptions is important for interpreting its resu
 
 8. **Homogeneous mills.** All 25 mills are identical in capability. Any mill can process any operation. Specialization (e.g., 5-axis vs. 3-axis) is not modeled.
 
-9. **Single-load AGVs.** Each AGV carries one item at a time. Multi-load optimization is not implemented.
+9. **Single-load vehicles.** Each AGV/AMR carries one item at a time. Multi-load optimization is not implemented.
 
 10. **No preventive maintenance.** Equipment runs until it fails. There is no scheduled maintenance, condition monitoring, or predictive replacement.
 
@@ -351,6 +374,9 @@ cargo run --release -- --duration 28800 --snapshots
 
 # Custom parameters
 cargo run --release -- --duration 14400 --mill-mtbf 14400 --agv-mtbf 21600 --seed 99
+
+# WIP limit and fleet composition
+cargo run --release -- --duration 28800 --max-wip 15 --num-amrs 4
 ```
 
 ### 8.4 CLI Flags Reference
@@ -366,16 +392,22 @@ cargo run --release -- --duration 14400 --mill-mtbf 14400 --agv-mtbf 21600 --see
 | `--mill-mtbf` | seconds | 28800 | Mean time between mill failures |
 | `--agv-mtbf` | seconds | 43200 | Mean time between AGV failures |
 | `--seed` | integer | 42 | RNG seed for reproducible runs |
+| `--max-wip` | integer | 20 | Maximum work-in-progress before back-pressure holds dispatch |
+| `--num-amrs` | integer | 2 | Number of AMRs in the fleet (in addition to the 6 AGVs) |
 
 ### 8.5 Batch Output
 
 In default mode, the simulation prints diagnostic events (faults, repairs, deadlocks) to **stderr** during the run, followed by a summary:
 
 ```
-factory-sim: running 28800s simulation (25 mills, 6 AGVs)
+factory-sim: running 28800s simulation (25 mills, 6 AGVs, 2 AMRs)
 [4231.5s] FAULT: Mill 17 down
 [6031.5s] REPAIR: Mill 17 back online
 [8102.3s] DEADLOCK resolved: retreated AGV 2 at seg 12
+[12500.0s] BACK-PRESSURE: WIP at limit (20/20), holding dispatch
+[12600.0s] BACK-PRESSURE relieved: WIP 18/20
+[15230.7s] FAULT: AMR 6 down
+[15830.7s] REPAIR: AMR 6 back online
 ...
 ═══ Simulation Summary ═══
 Duration:           28800s (8.0 hours)
@@ -385,6 +417,7 @@ Parts completed:    832
 Avg utilization:    24.8%
 Avg queue depth:    3.2
 Deadlocks detected: 4
+Back-pressure:      12
 Equipment faults:   37
 Throughput:         6.4 parts/hr
 ```
@@ -401,6 +434,7 @@ With `--json`, the summary is emitted as structured JSON to stdout:
   "jobs_dispatched": 847,
   "deadlocks_detected": 4,
   "total_faults": 37,
+  "back_pressure_events": 12,
   "mill_utilization": [0.28, 0.31, ...],
   "avg_utilization": 0.248,
   "total_throughput": 832,
@@ -445,11 +479,11 @@ The main visualization is an SVG rendering of the factory floor showing:
   - Faulted: red
   - WaitingPallet/WaitingTool: orange
 - **Lane network** — The 20-segment loop and 25 spur segments drawn as lines
-- **AGV positions** — Circles on the lane network showing each AGV's current segment, with projected path polylines showing their planned route
+- **Vehicle positions** — AGVs shown as cyan circles labeled by ID number; AMRs shown as purple diamonds labeled "M". Each vehicle displays a projected path polyline showing its planned route. Faulted vehicles pulse red.
 
 ### 9.4 Metrics Panel
 
-Displays 9 key performance indicators updated in real time:
+Displays key performance indicators updated in real time:
 
 - Total throughput (parts completed)
 - Throughput rate (parts/hour)
@@ -460,6 +494,8 @@ Displays 9 key performance indicators updated in real time:
 - Deadlocks detected
 - Total faults
 - Active mills (currently machining/loading/unloading)
+- WIP (current work-in-progress count / max WIP limit)
+- Back-pressure events (how many times dispatch was held due to WIP limit)
 
 Each utilization metric includes a visual bar indicator.
 
@@ -523,6 +559,7 @@ Sent once at startup with configuration and factory layout.
   "config": {
     "num_mills": 25,
     "num_agvs": 6,
+    "num_amrs": 2,
     "duration": 28800.0,
     "snapshot_interval": 1.0,
     "faults_enabled": true,
@@ -532,7 +569,8 @@ Sent once at startup with configuration and factory layout.
     "tool_types": 8,
     "pallet_types": 4,
     "loop_segments": 20,
-    "total_segments": 45
+    "total_segments": 45,
+    "max_wip": 20
   },
   "layout": {
     "mills": [{"id": 0, "row": 0, "col": 0, "loop_seg": 2, "spur_seg": 20}, ...],
@@ -549,12 +587,12 @@ Periodic state snapshot (default: every 1 second of simulated time).
   "time": 1234.5,
   "event_count": 5678,
   "mills": [{"id": 0, "state": "Machining", "job_id": 42, "op_index": 0, "loaded_tool": 3, "loaded_pallet": 7, "parts_completed": 12, "busy_time": 890.5, "fault_time": 0.0}, ...],
-  "agvs": [{"id": 0, "state": "Traveling", "segment": 5, "cargo": {"Workpiece": {"job_id": 43, "op_index": 0}}, "path": [6, 7, 8, 29], "path_cursor": 1, "delivered": 8}, ...],
+  "agvs": [{"id": 0, "vehicle_type": "Agv", "state": "Traveling", "segment": 5, "cargo": {"Workpiece": {"job_id": 43, "op_index": 0}}, "path": [6, 7, 8, 29], "path_cursor": 1, "delivered": 8}, ...],
   "lane_occupancy": [0, -1, -1, 2, ...],
   "tool_crib": {"inventory": {"0": 3, "1": 4, ...}, "total_issues": 156},
   "pallet_magazine": {"available": {"0": 6, "1": 7, ...}, "total_issued": 132},
   "job_queue": {"depth": 5, "next_8": [{"id": 44, "priority": "Normal", "ops": 2, "wait_time": 45.3}, ...]},
-  "metrics": {"throughput": 312, "throughput_rate": 6.2, "avg_utilization": 0.248, "avg_queue_depth": 3.1, "deadlocks": 2, "faults": 15}
+  "metrics": {"throughput": 312, "throughput_rate": 6.2, "avg_utilization": 0.248, "avg_queue_depth": 3.1, "deadlocks": 2, "faults": 15, "wip": 12, "max_wip": 20, "back_pressure_events": 3}
 }
 ```
 
@@ -579,7 +617,7 @@ Final summary sent when the simulation ends.
 | `stop` | `{"type":"stop"}` | Emit summary and terminate |
 | `speed` | `{"type":"speed","multiplier":16}` | Set events-per-batch multiplier |
 | `inject_fault` | `{"type":"inject_fault","target":{"Mill":5}}` | Force a fault on a specific target |
-| `set_param` | `{"type":"set_param","param":"mill_mtbf","value":14400}` | Change a parameter at runtime |
+| `set_param` | `{"type":"set_param","param":"mill_mtbf","value":14400}` | Change a parameter at runtime (supports `mill_mtbf`, `agv_mtbf`, `max_wip`) |
 | `step` | `{"type":"step","count":100}` | Advance N events then pause |
 
 ---
@@ -606,7 +644,15 @@ Number of times the wait-for graph detected a cycle among blocked AGVs. Each dea
 
 ### 11.5 Fault Count
 
-Total equipment failure events (mills + AGVs). With default MTBF values, expect roughly 25–40 faults in an 8-hour shift across all equipment.
+Total equipment failure events (mills + AGVs + AMRs). With default MTBF values, expect roughly 25–40 faults in an 8-hour shift across all equipment.
+
+### 11.6 Back-Pressure Events
+
+Number of scheduler ticks where dispatch was held because WIP had reached the `max_wip` limit. Frequent back-pressure indicates the WIP limit is constraining throughput — either the limit is too low for the arrival rate, or mills are taking too long to complete jobs. Zero back-pressure events mean the system never reached the WIP ceiling.
+
+### 11.7 WIP (Work in Progress)
+
+The current count of mills actively processing work (any state other than Idle or Faulted). Displayed in the dashboard as `current/max`. When WIP equals `max_wip`, the scheduler enters back-pressure mode and holds further dispatch until a mill finishes and returns to Idle.
 
 ---
 
@@ -614,7 +660,9 @@ Total equipment failure events (mills + AGVs). With default MTBF values, expect 
 
 | Term | Definition |
 |---|---|
-| **AGV** | Automated Guided Vehicle — a robotic cart that transports materials along the lane network. |
+| **AGV** | Automated Guided Vehicle — a robotic cart that transports materials along the lane network. Can enter spur segments to deliver to mills. |
+| **AMR** | Autonomous Mobile Robot — a faster, more reliable vehicle restricted to the main loop. Cannot enter spur segments. |
+| **Back-pressure** | The scheduler's response when WIP reaches the configured limit: new job dispatch is held until a mill finishes. |
 | **BFS** | Breadth-First Search — the routing algorithm used to find shortest paths on the lane network. |
 | **DES** | Discrete-Event Simulation — a simulation paradigm where state changes occur at discrete points in time driven by an event queue. |
 | **FMS** | Flexible Manufacturing System — a production system with CNC machines, automated material handling, and computer-controlled scheduling. |
@@ -624,5 +672,7 @@ Total equipment failure events (mills + AGVs). With default MTBF values, expect 
 | **Segment** | One atomic unit of the lane network. Holds at most one AGV (mutual exclusion). |
 | **Spur** | A dedicated lane segment branching from the main loop to a single mill. |
 | **Tool set** | A logical group of cutting tools (e.g., end mill, drill, chamfer) identified by type ID. |
-| **Victim retreat** | Deadlock resolution strategy: one AGV in the cycle drops its cargo and returns to Idle, breaking the circular wait. |
-| **Wait-for graph** | A directed graph where an edge from AGV A to AGV B means A is blocked waiting for a segment that B occupies. A cycle in this graph indicates deadlock. |
+| **Victim retreat** | Deadlock resolution strategy: one vehicle in the cycle drops its cargo and returns to Idle, breaking the circular wait. |
+| **Wait-for graph** | A directed graph where an edge from vehicle A to vehicle B means A is blocked waiting for a segment that B occupies. A cycle in this graph indicates deadlock. |
+| **WIP** | Work in Progress — the count of mills actively processing jobs (not Idle, not Faulted). Controlled by the `max_wip` admission limit. |
+| **Yield** | When an idle vehicle blocks an active vehicle's path, the scheduler moves the idle vehicle to the nearest free loop segment. |
