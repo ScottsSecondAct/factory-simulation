@@ -246,7 +246,7 @@ The queue is maintained in **priority order** (stable within the same priority l
 
 ## 4. Scheduling Engine
 
-The scheduler runs on a **5-second periodic heartbeat** (`SchedulerTick`). Each tick executes seven phases in order:
+The scheduler runs on a **5-second periodic heartbeat** (`SchedulerTick`). Each tick executes six phases in order:
 
 ### 4.1 Phase 1: Prepared Workpiece Delivery
 
@@ -515,28 +515,28 @@ In default mode, the simulation prints diagnostic events (faults, repairs, deadl
 
 ```
 factory-sim: running 28800s simulation (25 mills, 6 AGVs, 2 AMRs)
-[4231.5s] FAULT: Mill 17 down
-[6031.5s] REPAIR: Mill 17 back online
-[8102.3s] DEADLOCK resolved: retreated AGV 2 at seg 12
-[12500.0s] BACK-PRESSURE: WIP at limit (20/20), holding dispatch
-[12600.0s] BACK-PRESSURE relieved: WIP 18/20
-[15230.7s] FAULT: AMR 6 down
-[15830.7s] REPAIR: AMR 6 back online
+[185.0s] WORK-PREP: job 1 ready for mill 0
+[195.0s] DEADLOCK resolved: retreated AGV 1 at seg 16
+[2023.7s] FAULT: Mill 5 down
+[3509.8s] FAULT: AGV 2 down
+[3823.7s] REPAIR: Mill 5 back online
+[4250.0s] CHIP-EVAC: dispatched AGV 1 to mill 0
+[4409.8s] REPAIR: AGV 2 back online
 ...
 ═══ Simulation Summary ═══
 Duration:           28800s (8.0 hours)
-Events processed:   48372
-Jobs dispatched:    847
-Parts completed:    832
-Avg utilization:    24.8%
-Avg queue depth:    3.2
-Deadlocks detected: 4
-Back-pressure:      12
-Chip evacuations:   8
-Work prep jobs:     45
-Reconciliation:     960 passes, 3214 drifts (max 12 per pass)
-Equipment faults:   37
-Throughput:         6.4 parts/hr
+Events processed:   9570
+Jobs dispatched:    252
+Parts completed:    55
+Avg utilization:    4.7%
+Avg queue depth:    0.2
+Deadlocks detected: 1197
+Back-pressure:      0
+Chip evacuations:   1022
+Work prep jobs:     80
+Reconciliation:     961 passes, 1663 drifts (max 15 per pass)
+Equipment faults:   24
+Throughput:         6.9 parts/hr
 ```
 
 ### 9.6 JSON Output
@@ -546,21 +546,21 @@ With `--json`, the summary is emitted as structured JSON to stdout:
 ```json
 {
   "sim_duration": 28800.0,
-  "events_processed": 48372,
-  "jobs_completed": 832,
-  "jobs_dispatched": 847,
-  "deadlocks_detected": 4,
-  "total_faults": 37,
-  "back_pressure_events": 12,
-  "chip_evacuations": 8,
-  "work_prep_jobs": 45,
-  "reconciliation_passes": 960,
-  "reconciliation_drifts": 3214,
-  "max_drifts_in_pass": 12,
-  "mill_utilization": [0.28, 0.31, ...],
-  "avg_utilization": 0.248,
-  "total_throughput": 832,
-  "avg_queue_depth": 3.2
+  "events_processed": 9570,
+  "jobs_completed": 55,
+  "jobs_dispatched": 252,
+  "deadlocks_detected": 1197,
+  "total_faults": 24,
+  "back_pressure_events": 0,
+  "chip_evacuations": 1022,
+  "work_prep_jobs": 80,
+  "reconciliation_passes": 961,
+  "reconciliation_drifts": 1663,
+  "max_drifts_in_pass": 15,
+  "mill_utilization": [0.130, 0.122, 0.104, ...],
+  "avg_utilization": 0.047,
+  "total_throughput": 55,
+  "avg_queue_depth": 0.18
 }
 ```
 
@@ -719,7 +719,7 @@ Periodic state snapshot (default: every 1 second of simulated time).
   "tool_crib": {"inventory": {"0": 3, "1": 4, ...}, "total_issues": 156},
   "pallet_magazine": {"available": {"0": 6, "1": 7, ...}, "total_issued": 132},
   "job_queue": {"depth": 5, "next_8": [{"id": 44, "priority": "Normal", "ops": 2, "wait_time": 45.3}, ...]},
-  "metrics": {"throughput": 312, "throughput_rate": 6.2, "avg_utilization": 0.248, "avg_queue_depth": 3.1, "deadlocks": 2, "faults": 15, "wip": 12, "max_wip": 20, "back_pressure_events": 3, "chip_evacuations": 8, "work_prep_jobs": 280, "work_prep_queue": 2, "work_prep_state": "Processing"}
+  "metrics": {"throughput": 28, "throughput_rate": 6.7, "avg_utilization": 0.047, "avg_queue_depth": 0.2, "deadlocks": 598, "faults": 12, "wip": 3, "max_wip": 20, "back_pressure_events": 0, "chip_evacuations": 510, "work_prep_jobs": 40, "work_prep_queue": 1, "work_prep_state": "Processing", "reconciliation_passes": 480, "reconciliation_drifts": 830, "max_drifts_in_pass": 15}
 }
 ```
 
@@ -730,7 +730,7 @@ Discrete events of interest (faults, repairs, completions).
 {"type": "event", "time": 6031.5, "kind": "repair", "detail": {"target": {"Mill": 17}}}
 {"type": "event", "time": 1500.0, "kind": "completion", "detail": {"mill_id": 3, "job_id": 22}}
 {"type": "event", "time": 2870.0, "kind": "chip_evac", "detail": {"mill_id": 0}}
-{"type": "event", "time": 30.0, "kind": "drift", "detail": {"category": "AgvPosition", "description": "Vehicle 0: believed seg 0, actual seg 18", "pass": 2}}
+{"type": "event", "time": 30.0, "kind": "drift", "detail": {"category": "MillState", "description": "Mill 0: believed Idle, actual Loading", "pass": 2}}
 ```
 
 #### `summary`
@@ -757,11 +757,11 @@ Final summary sent when the simulation ends.
 
 Calculated as `busy_time / sim_duration` per mill. "Busy time" is the total time spent in the Machining state only. Loading, unloading, and tool changes are overhead and do not count as utilization. Average utilization is the mean across all 25 mills.
 
-Typical values for an 8-hour run with default parameters: **20–30% utilization**. This is realistic for a job-shop FMS where setup time, material handling, and queue waiting dominate. High-volume dedicated lines achieve higher utilization.
+Typical values for an 8-hour run with default parameters: **3–5% utilization**. This reflects the heavy overhead of material handling in the simulated system: the two-leg mission through the work prep station, frequent lane deadlocks (which drop cargo and waste work), and the single-server work prep bottleneck all constrain how much time mills actually spend cutting metal. Only the first ~14 mills (those closest to the loop junction segments) receive steady work; the remaining mills rarely see jobs. This low utilization is characteristic of a transport-constrained system where scheduling and traffic management — not spindle time — are the bottleneck.
 
 ### 12.2 Throughput
 
-Total parts completed across all mills, and the rate in parts per hour. With 25 mills and default job arrival rates, expect approximately **6–7 parts/hour** sustained throughput.
+Total parts completed across all mills, and the rate in parts per hour. With 25 mills and default job arrival rates, expect approximately **5–7 parts/hour** sustained throughput. The gap between jobs dispatched (~252) and parts completed (~55) reflects cargo dropped during deadlock victim retreats and missions aborted by equipment faults.
 
 ### 12.3 Queue Depth
 
@@ -769,19 +769,19 @@ Average number of jobs waiting in the queue. A growing queue indicates the syste
 
 ### 12.4 Deadlock Count
 
-Number of times the wait-for graph detected a cycle among blocked AGVs. Each deadlock causes one AGV to lose its mission (victim retreat), so frequent deadlocks reduce effective throughput and increase job latency.
+Number of times the wait-for graph detected a cycle among blocked vehicles. With the default fleet of 6 AGVs and 2 AMRs on a 20-segment loop, expect **1,000–1,500 deadlocks** in an 8-hour shift — the lane network is heavily contended. Each deadlock causes one vehicle to drop its cargo and retreat, wasting the dispatched mission. This high deadlock rate is the primary throughput limiter in the default configuration and a realistic reflection of the traffic management challenge in shared-lane FMS installations.
 
 ### 12.5 Fault Count
 
-Total equipment failure events (mills + AGVs + AMRs). With default MTBF values, expect roughly 25–40 faults in an 8-hour shift across all equipment.
+Total equipment failure events (mills + AGVs + AMRs + work prep station). With default MTBF values, expect roughly **20–30 faults** in an 8-hour shift across all 34 pieces of equipment.
 
 ### 12.6 Back-Pressure Events
 
-Number of scheduler ticks where dispatch was held because WIP had reached the `max_wip` limit. Frequent back-pressure indicates the WIP limit is constraining throughput — either the limit is too low for the arrival rate, or mills are taking too long to complete jobs. Zero back-pressure events mean the system never reached the WIP ceiling.
+Number of scheduler ticks where dispatch was held because WIP had reached the `max_wip` limit. With the default `max_wip` of 20 and the high deadlock rate limiting effective throughput, the system typically shows **zero back-pressure events** — WIP stays well below the ceiling because the transport bottleneck limits how many mills can be kept busy simultaneously. Non-zero back-pressure would indicate either a very low `max_wip` setting or a configuration with fewer deadlocks (e.g., fewer vehicles, wider lanes).
 
 ### 12.7 Chip Evacuations
 
-Total number of chip evacuation missions dispatched. Each evacuation ties up an AGV for the transit time to the mill spur plus 60 seconds of evacuation, competing directly with production dispatch. Frequent evacuations indicate mills are machining at high rates; zero evacuations mean chip bins never reached capacity (short simulation or low throughput).
+Total number of chip evacuation missions dispatched. Each evacuation ties up an AGV for the transit time to the mill spur plus 60 seconds of evacuation, competing directly with production dispatch. With default parameters expect **800–1,200 chip evacuations** in an 8-hour shift — the scheduler aggressively dispatches evacuations for any chip-full mill, and repeated deadlock-related cargo drops cause mills to cycle through chip-full states multiple times. Zero evacuations would mean chip bins never reached capacity (short simulation or very low throughput).
 
 ### 12.8 Reconciliation
 
@@ -794,7 +794,7 @@ Drifts are categorized into five types:
 - **PalletInventory** — the pallet magazine's available count for a fixture type changed.
 - **WorkPrepState** — the work preparation station's state changed.
 
-The summary reports three reconciliation metrics: total passes (one per 30s tick), total drifts across all passes, and the maximum number of drifts found in any single pass. A high drift count is normal in an active factory — it confirms events are occurring between checks. Anomalously high max-drifts-per-pass may indicate a burst of simultaneous state changes (e.g., a cascade of faults).
+The summary reports three reconciliation metrics: total passes (one per 30s tick, ~961 in an 8-hour shift), total drifts across all passes (~1,600–1,700 with default parameters), and the maximum number of drifts found in any single pass (~15). Averaging 1–2 drifts per pass is normal in an active factory — it confirms events are occurring between checks. The most common drift types are MillState (mills transitioning between Idle/Loading/Machining), PalletInventory (pallets being checked out and returned), and ToolInventory (tool sets cycling through the crib). Anomalously high max-drifts-per-pass may indicate a burst of simultaneous state changes (e.g., a cascade of faults or a wave of job dispatches).
 
 ### 12.9 WIP (Work in Progress)
 

@@ -5,6 +5,7 @@ Discrete-event factory orchestration simulator modeling a flexible manufacturing
 [![Rust](https://img.shields.io/badge/Rust-2021_edition-orange)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-Source_Available-lightgrey.svg)](LICENSE)
 [![CI](https://github.com/ScottsSecondAct/factory-simulation/actions/workflows/ci.yml/badge.svg)](https://github.com/ScottsSecondAct/factory-simulation/actions/workflows/ci.yml)
+[![Claude Assisted](https://img.shields.io/badge/Claude-Assisted-blueviolet?logo=anthropic&logoColor=white)](https://claude.ai)
 
 ## Architecture
 
@@ -71,6 +72,8 @@ The dashboard launches the sim binary automatically in IPC mode. It expects the 
 | `--mill-mtbf SECS` | Mean time between mill failures | `28800` |
 | `--agv-mtbf SECS` | Mean time between AGV failures | `43200` |
 | `--seed N` | RNG seed for reproducible runs | `42` |
+| `--max-wip N` | WIP limit for back-pressure | `20` |
+| `--num-amrs N` | Number of AMRs in the fleet | `2` |
 
 ## IPC Protocol
 
@@ -107,12 +110,14 @@ Diagnostic messages go to stderr with severity prefixes, separate from protocol 
 ```
 factory-simulation/
 +-- src/                    Rust simulation
-|   +-- main.rs             World aggregate, event dispatch, CLI
+|   +-- main.rs             CLI entry point, batch-mode event loop
+|   +-- world.rs            World aggregate, shared event dispatch
 |   +-- engine.rs           Event queue, clock, TimedEvent
-|   +-- factory.rs          Mill FSM, ToolCrib, PalletMagazine
+|   +-- factory.rs          Mill FSM, ToolCrib, PalletMagazine, WorkPrepStation
 |   +-- agv.rs              AGV state, LaneNetwork, WaitForGraph
 |   +-- scheduler.rs        Job dispatch, look-ahead, deadlock detection
 |   +-- fault.rs            Stochastic failure model
+|   +-- reconcile.rs        Periodic state reconciliation pass
 |   +-- metrics.rs          Snapshots, summaries, JSON serialization
 |   +-- ipc.rs              IPC protocol for dashboard communication
 |   +-- types.rs            IDs, enums, constants, layout geometry
@@ -141,32 +146,37 @@ factory-simulation/
 ## Lane Network Topology
 
 ```
-         Tool Crib (seg 0)
+              Tool Crib (seg 0)
+                   |
+         +--- 19 < 0 > 1 ---+
+         |    |              |
+        18    2--[Row 0: Mills 0-4, spurs 20-24]
+         |    |
+        17    3
+         |    |
+        16    4
+         |    |              Chip Station (seg 5)
+Work     |    |                   |
+Prep  > 15    5 <-----------------+
+(seg 15) |    |
+        14    6--[Row 1: Mills 5-9, spurs 25-29]
+         |    |
+        13    7
+         |    |
+        12    8
+         |    |
+        11    9
+         |    |              |
+         +-- 10 < - - - - ---+
               |
-    +--- 19 < 0 > 1 ---+
-    |    |              |
-   18    2--[Row 0: Mills 0-4]
-    |    |
-   17    3
-    |    |
-   16    4
-    |    |
-   15    5
-    |    |
-   14    6--[Row 1: Mills 5-9]
-    |    |
-   13    7
-    |    |
-   12    8
-    |    |
-   11    9
-    |    |              |
-    +-- 10 < - - - - ---+
-         |
-    Pallet Magazine (seg 10)
+         Pallet Magazine (seg 10)
 ```
 
-Each mill connects to the loop via a dedicated spur segment. AGVs compete for segment access with mutual exclusion at the segment level. The scheduler maintains a wait-for graph to detect and resolve circular waits (deadlocks) through victim retreat.
+Each mill connects to the loop via a dedicated spur segment. The fleet includes both AGVs (can enter spurs) and AMRs (main loop only). Vehicles compete for segment access with mutual exclusion at the segment level. The scheduler maintains a wait-for graph to detect and resolve circular waits (deadlocks) through victim retreat.
+
+## AI Assistance
+
+This project was developed with the assistance of [Claude](https://claude.ai) (Anthropic). Claude contributed to code implementation, debugging, documentation, and code review throughout the development process. All architecture decisions, domain modeling, and engineering direction are by the author.
 
 ## License
 
