@@ -2,9 +2,10 @@
 
 ## What this is
 A discrete-event factory orchestration simulator modeling a flexible manufacturing
-system (FMS): 25 CNC mills, 6 AGVs on a shared-lane network, tool crib, pallet
-magazine, priority job queue. Written in Rust. The artifact that matters is a
-working prototype of a real factory controller, not a toy.
+system (FMS): 25 CNC mills, heterogeneous vehicle fleet (6 AGVs + 2 AMRs) on a
+shared-lane network, tool crib, pallet magazine, robotic work prep station, priority
+job queue with WIP admission control. Written in Rust. The artifact that matters is
+a working prototype of a real factory controller, not a toy.
 
 ## Architecture
 
@@ -30,13 +31,17 @@ keeps the event flow traceable.
 | Module | Owns | Does NOT own |
 |---|---|---|
 | `engine.rs` | Event queue, clock, `TimedEvent` | Any domain logic |
-| `factory.rs` | Mill FSM, ToolCrib, PalletMagazine | Scheduling decisions |
-| `agv.rs` | AGV state, LaneNetwork, WaitForGraph | Route selection policy |
+| `world.rs` | World aggregate, event dispatch | CLI, batch-mode loop |
+| `factory.rs` | Mill FSM, ToolCrib, PalletMagazine, WorkPrepStation | Scheduling decisions |
+| `agv.rs` | AGV/AMR state, LaneNetwork, WaitForGraph | Route selection policy |
 | `scheduler.rs` | Job dispatch, look-ahead, deadlock detection | Equipment state transitions |
-| `fault.rs` | Stochastic failure model | Repair logic beyond duration |
+| `fault.rs` | Stochastic failure model (mills, AGVs, AMRs, work prep) | Repair logic beyond duration |
+| `reconcile.rs` | Periodic state reconciliation, drift detection | Corrective actions |
 | `metrics.rs` | Snapshots, summaries, JSON serialization | Simulation control flow |
+| `ipc.rs` | Dashboard IPC protocol (JSON-lines on stdio) | Simulation logic |
 | `types.rs` | IDs, enums, constants, layout geometry | Behavior |
-| `main.rs` | World aggregate, event dispatch, CLI | Nothing else should go here |
+| `lib.rs` | Library crate root (re-exports) | Logic |
+| `main.rs` | CLI entry point, batch-mode event loop | Nothing else should go here |
 
 If a change touches two modules, check whether you're violating a boundary.
 
@@ -49,10 +54,24 @@ If a change touches two modules, check whether you're violating a boundary.
   by `ToolSetId`. The crib stocks multiple copies of each set.
 - **Pallet**: a fixture that holds a workpiece. Typed (different part geometries
   need different fixtures). Finite pool in the magazine.
-- **Mission**: an AGV dispatch — pickup location, delivery location, cargo.
-- **Wait-for graph**: directed graph where edge A→B means "AGV A is blocked
-  waiting for a segment held by AGV B." A cycle = deadlock.
-- **Victim retreat**: deadlock resolution by backing one AGV out of the cycle.
+- **AMR** (Autonomous Mobile Robot): faster, more reliable vehicle restricted to
+  the main loop. Cannot enter spur segments. Handles first-leg missions to work prep.
+- **Mission**: a vehicle dispatch — pickup location, delivery location, cargo.
+- **Two-leg mission**: job dispatch goes vehicle → work prep station (leg 1), then
+  AGV → mill spur (leg 2). AMRs can handle leg 1; only AGVs handle leg 2.
+- **Work prep station**: robotic billet loading station at segment 15. Single-server
+  queue (max depth 4) that clamps raw stock onto pallet fixtures.
+- **Chip evacuation**: dispatching an AGV to a mill whose chip bin is full, competing
+  with production dispatch for vehicle availability.
+- **Back-pressure**: WIP admission control — scheduler holds dispatch when active
+  mills reach the `max_wip` limit.
+- **Wait-for graph**: directed graph where edge A→B means "vehicle A is blocked
+  waiting for a segment held by vehicle B." A cycle = deadlock.
+- **Victim retreat**: deadlock resolution by backing one vehicle out of the cycle.
+- **Idle-vehicle yielding**: relocating an idle vehicle that blocks an active
+  vehicle's path to the nearest free loop segment.
+- **Reconciliation**: periodic (30s) comparison of cached scheduler belief against
+  actual equipment state. Discrepancies are logged as drift events.
 - **Look-ahead staging**: examining the next N jobs in the queue to pre-position
   tools/pallets before they're needed.
 
@@ -71,10 +90,11 @@ If a change touches two modules, check whether you're violating a boundary.
 
 ## The dashboard
 
-`dashboard/index.html` — standalone HTML/JS that runs its own simulation engine
-mirroring the Rust architecture. It's a demo artifact, not a thin client. When
-the Rust sim's behavior changes, the JS sim should be updated to match (same
-state machines, same scheduling logic, same lane topology).
+`dashboard/` — Electron app (React, TypeScript, Zustand, electron-vite) that
+spawns the Rust sim as a child process with `--ipc` and communicates over stdio
+using a JSON-lines protocol. It renders the factory floor as SVG with live
+metrics, event log, trend charts, and interactive controls. When the Rust sim's
+behavior changes, the dashboard should be updated to match.
 
 ## What matters for this project
 
@@ -93,6 +113,5 @@ state machines, same scheduling logic, same lane topology).
 
 - Performance optimization (the sim is already fast enough)
 - Multi-threaded execution
-- Network protocol for dashboard ↔ sim communication
 - Persistent storage of simulation runs
 - UI polish beyond functional clarity
